@@ -11,8 +11,18 @@ from tqdm import tqdm
 
 from models.experimental import attempt_load
 from utils.datasets import create_dataloader
-from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
-    box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
+from utils.general import (coco80_to_coco91_class,
+                           check_dataset, check_file,
+                           check_img_size,
+                           check_requirements,
+                           box_iou,
+                           non_max_suppression,
+                           scale_coords,
+                           xyxy2xywh,
+                           xywh2xyxy,
+                           set_logging,
+                           increment_path,
+                           colorstr)
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
@@ -29,6 +39,7 @@ def test(data,
          augment=False,
          verbose=False,
          model=None,
+         normalise_image=True,
          dataloader=None,
          save_dir=Path(''),  # for saving images
          save_txt=False,  # for auto-labelling
@@ -104,7 +115,8 @@ def test(data,
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        if normalise_image:
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
 
