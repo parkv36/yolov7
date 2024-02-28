@@ -18,9 +18,9 @@ import torch
 import torchvision
 import yaml
 
-from utils.google_utils import gsutil_getsize
-from utils.metrics import fitness
-from utils.torch_utils import init_torch_seeds
+from .google_utils import gsutil_getsize
+from .metrics import fitness
+from .torch_utils import init_torch_seeds
 
 # Settings
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
@@ -220,6 +220,7 @@ def labels_to_class_weights(labels, nc=80):
 
     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
     classes = labels[:, 0].astype(np.int32)  # labels = [class xywh]
+    classes = classes[classes > 0]  # ISAAC's ADDITION to remove global labels (which are negative)
     weights = np.bincount(classes, minlength=nc)  # occurrences per class
 
     # Prepend gridpoint count (for uCE training)
