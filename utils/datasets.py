@@ -26,9 +26,20 @@ from copy import deepcopy
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 
-from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
-    resample_segments, clean_str
+from utils.general import (check_requirements,
+                           xyxy2xywh,
+                           xywh2xyxy,
+                           xywhn2xyxy,
+                           xyn2xy,
+                           segment2box,
+                           segments2boxes,
+                           resample_segments,
+                           clean_str)
+from utils.preprocessing import remove_ambiguous_classes
 from utils.torch_utils import torch_distributed_zero_first
+from utils.generators import Yolov7Generator
+from utils.generators import get_indices
+
 
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
@@ -63,19 +74,32 @@ def exif_size(img):
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix=''):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='',
+                      ambiguous_classes=(), mapping_classes: dict = None, probabilities: dict = None,
+                      shuffle_class=False, redo_caching=False, custom_augment_fun=None):
+
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
-        dataset = LoadImagesAndLabels(path, imgsz, batch_size,
-                                      augment=augment,  # augment images
-                                      hyp=hyp,  # augmentation hyperparameters
-                                      rect=rect,  # rectangular training
-                                      cache_images=cache,
-                                      single_cls=opt.single_cls,
-                                      stride=int(stride),
-                                      pad=pad,
-                                      image_weights=image_weights,
-                                      prefix=prefix)
+        if isinstance(path, Yolov7Generator):
+            dataset = path
+        else:
+            dataset = LoadImagesAndLabels(path, imgsz, batch_size,
+                                          augment=augment,  # augment images
+                                          hyp=hyp,  # augmentation hyperparameters
+                                          rect=rect,  # rectangular training
+                                          cache_images=cache,
+                                          single_cls=opt.single_cls,
+                                          stride=int(stride),
+                                          pad=pad,
+                                          image_weights=image_weights,
+                                          prefix=prefix,
+                                          ambiguous_classes=ambiguous_classes,
+                                          mapping_classes=mapping_classes,
+                                          probabilities=probabilities,
+                                          shuffle_class=shuffle_class,
+                                          redo_caching=redo_caching,
+                                          custom_augment_fun=custom_augment_fun)
+
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -344,15 +368,40 @@ class LoadStreams:  # multiple IP or RTSP cameras
         return 0  # 1E12 frames = 32 streams at 30 FPS for 30 years
 
 
+# ISAAC's addition
 def img2label_paths(img_paths):
     # Define label paths as a function of image paths
-    sa, sb = os.sep + 'images' + os.sep, os.sep + 'labels' + os.sep  # /images/, /labels/ substrings
-    return ['txt'.join(x.replace(sa, sb, 1).rsplit(x.split('.')[-1], 1)) for x in img_paths]
+    paths = []
+    for x in img_paths:
+        dirname, filename = os.path.split(x)
+        root, dirname = os.path.split(dirname)
+        #label_dirname = os.path.join(root, 'labels', dirname)
+        #paths.append(os.path.join(label_dirname, filename[:filename.rfind('.')] + '.txt'))
+        l = os.path.join(root, 'labels', dirname, filename)
+        paths.append(l.rsplit('.', 1)[0] + '.txt')
+    return paths
+
+
+def img2label_paths_old(img_paths):
+    # Define label paths as a function of image paths
+    paths = []
+    for x in img_paths:
+        if '/images/' not in x:
+            dirname, filename = os.path.split(x)
+            root, dirname = os.path.split(dirname)
+            paths.append(os.path.join(root, 'label', dirname, filename[:filename.rfind('.')] + '.txt'))
+        else:
+            sa, sb = os.sep + 'images' + os.sep, os.sep + 'labels' + os.sep  # /images/, /labels/ substrings
+            paths.append(os.path.join('txt'.join(x.replace(sa, sb, 1).rsplit(x.split('.')[-1], 1))))
+    return paths
 
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix=''):
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', ambiguous_classes=(),
+                 mapping_classes: dict = None, probabilities: dict = None, shuffle_class=False, redo_caching=False,
+                 custom_augment_fun=None):
+
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -361,7 +410,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
-        self.path = path        
+        self.path = path
+        self.redo_caching = redo_caching
+        self.ambiguous_classes = ambiguous_classes
+        self.mapping_classes = mapping_classes or {}
+        self.inverse_mapping = {}
+        self.custom_augment_fun = custom_augment_fun
+
+        self.probabilities = probabilities or {}
+        self.shuffle_class = shuffle_class
+        self.label_indices = {}
         #self.albumentations = Albumentations() if augment else None
 
         try:
@@ -388,7 +446,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # Check cache
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')  # cached labels
-        if cache_path.is_file():
+        if cache_path.is_file() and not self.redo_caching:
             cache, exists = torch.load(cache_path), True  # load
             #if cache['hash'] != get_hash(self.label_files + self.img_files) or 'version' not in cache:  # changed
             #    cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
@@ -396,17 +454,27 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             cache, exists = self.cache_labels(cache_path, prefix), False  # cache
 
         # Display cache
+        # ISAAC's ADDITION: Remove bounding boxes with negative detections. However, the original self.labels and
+        #  self.label_indices must be kept to be used later on to get the self.probabilities
         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupted, total
+        cache.pop('hash')  # remove hash
+        cache.pop('version')  # remove version
+
         if exists:
             d = f"Scanning '{cache_path}' images and labels... {nf} found, {nm} missing, {ne} empty, {nc} corrupted"
             tqdm(None, desc=prefix + d, total=n, initial=n)  # display cache results
         assert nf > 0 or not augment, f'{prefix}No labels in {cache_path}. Can not train without labels. See {help_url}'
 
         # Read cache
-        cache.pop('hash')  # remove hash
-        cache.pop('version')  # remove version
+
         labels, shapes, self.segments = zip(*cache.values())
-        self.labels = list(labels)
+        self.labels = []
+        complete_labels = list(labels)
+        for i, value in enumerate(complete_labels):
+            value_copy = value.copy()
+            value_copy = value_copy[value_copy[:, 0] >= 0]
+            self.labels.append(value_copy)
+
         self.shapes = np.array(shapes, dtype=np.float64)
         self.img_files = list(cache.keys())  # update
         self.label_files = img2label_paths(cache.keys())  # update
@@ -415,7 +483,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 x[:, 0] = 0
 
         n = len(shapes)  # number of images
-        bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
+        bi = np.floor(np.arange(n) / batch_size).astype(np.int32)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
@@ -443,7 +511,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(np.int32) * stride
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -466,6 +534,48 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     gb += self.imgs[i].nbytes
                 pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
             pbar.close()
+
+        self.mapping_classes[-1] = -1
+        for i, value in enumerate(complete_labels):
+            if len(value) == 0:
+                labels = np.array([-1])
+            else:
+                labels = np.unique(value[:, 0])
+            are_empty = [True if label in self.ambiguous_classes else False for label in labels]
+            if all(are_empty):
+                labels = np.array([-1])
+            else:
+                labels = labels[~np.array(are_empty)]
+            for label in labels:
+                mapped_label = self.mapping_classes.get(int(label), int(label))
+                self.label_indices.setdefault(mapped_label, []).append(i)
+
+        if not self.probabilities and self.shuffle_class and self.mapping_classes:
+            nc = len(self.label_indices)
+            keys = list(self.label_indices.keys())
+            self.probabilities = {keys[i]: float(i+1) / nc for i in range(nc)}
+
+        for key in self.probabilities.keys():
+            key = int(key)
+            if key < 0:
+                self.mapping_classes[key] = key
+
+        if self.probabilities:
+            prob_aux = {}
+            for key, value in self.probabilities.items():
+                key = int(key)
+                if key in self.mapping_classes:
+                    prob_aux[self.mapping_classes[key]] = value
+            self.probabilities = prob_aux
+
+            # if self.mapping_classes:
+            #    self.inverse_mapping = {value: key for key, value in self.mapping_classes.items()}
+            # prob_aux = self.probabilities.copy()
+
+            class_keys = list(prob_aux.keys())
+            values = list(prob_aux.values())
+            values = np.cumsum(values) / np.sum(values)
+            self.probabilities = {key: values[i] for i, key in enumerate(class_keys)}
 
     def cache_labels(self, path=Path('./labels.cache'), prefix=''):
         # Cache dataset labels, check images and read shapes
@@ -494,7 +604,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         l = np.array(l, dtype=np.float32)
                     if len(l):
                         assert l.shape[1] == 5, 'labels require 5 columns each'
-                        assert (l >= 0).all(), 'negative labels'
+                        #assert (l >= 0).all(), 'negative labels'
                         assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
                         assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
                     else:
@@ -532,7 +642,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     return self
 
     def __getitem__(self, index):
-        index = self.indices[index]  # linear, shuffled, or image_weights
+        # index = self.indices[index]  # linear, shuffled, or image_weights
+        index = get_indices(indices=self.indices, labels_index=self.label_indices, index=index, num_indices=1,
+                            probabilities=self.probabilities, non_weighted=not self.shuffle_class,
+                            map=self.inverse_mapping)[0]
 
         hyp = self.hyp
         mosaic = self.mosaic and random.random() < hyp['mosaic']
@@ -569,6 +682,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         if self.augment:
             # Augment imagespace
+            if self.custom_augment_fun is not None:
+                img, bbox, bbox_labels = self.custom_augment_fun(img, labels[:, 1:], labels[:, 0])
+                labels = np.hstack([bbox_labels[..., None], bbox])
+
             if not mosaic:
                 img, labels = random_perspective(img, labels,
                                                  degrees=hyp['degrees'],
@@ -617,6 +734,20 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img = np.fliplr(img)
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
+
+        if self.ambiguous_classes:
+            img, bbox, bbox_labels = remove_ambiguous_classes(image=img,
+                                                              ambiguous_classes=self.ambiguous_classes,
+                                                              bbs=labels[:, 1:],
+                                                              bbs_classes=labels[:, 0],
+                                                              xywh=True)
+            labels = np.hstack([bbox_labels[..., None], bbox])
+
+        if self.mapping_classes and len(labels) > 0:
+            labels = labels[np.isin(labels[:, 0], np.array(list(self.mapping_classes.keys()))), ...]
+            labels[:, 0] = np.array([self.mapping_classes[int(label)] for label in labels[:, 0]])
+
+        nL = len(labels)
 
         labels_out = torch.zeros((nL, 6))
         if nL:
@@ -711,7 +842,10 @@ def load_mosaic(self, index):
     labels4, segments4 = [], []
     s = self.img_size
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
-    indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+    # indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+    indices = get_indices(indices=self.indices, labels_index=self.label_indices, index=index, num_indices=4,
+                        probabilities=self.probabilities, non_weighted=not self.shuffle_class,
+                            map=self.inverse_mapping)
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
@@ -769,7 +903,10 @@ def load_mosaic9(self, index):
 
     labels9, segments9 = [], []
     s = self.img_size
-    indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+    # indices = [index] + random.choices(self.indices, k=8)  # 8 additional image indices
+    indices = get_indices(indices=self.indices, labels_index=self.label_indices, index=index, num_indices=9,
+                          probabilities=self.probabilities, non_weighted=not self.shuffle_class,
+                            map=self.inverse_mapping)
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
@@ -1283,7 +1420,7 @@ def extract_boxes(path='../coco/'):  # from utils.datasets import *; extract_box
                     b = x[1:] * [w, h, w, h]  # box
                     # b[2:] = b[2:].max()  # rectangle to square
                     b[2:] = b[2:] * 1.2 + 3  # pad
-                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(np.int)
+                    b = xywh2xyxy(b.reshape(-1, 4)).ravel().astype(np.int32)
 
                     b[[0, 2]] = np.clip(b[[0, 2]], 0, w)  # clip boxes outside of image
                     b[[1, 3]] = np.clip(b[[1, 3]], 0, h)
