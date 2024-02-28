@@ -4,7 +4,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from utils.general import bbox_iou, bbox_alpha_iou, box_iou, box_giou, box_diou, box_ciou, xywh2xyxy
+from utils.general import (bbox_iou,
+                           bbox_alpha_iou,
+                           box_iou,
+                           box_giou,
+                           box_diou,
+                           box_ciou,
+                           xywh2xyxy)
 from utils.torch_utils import is_parallel
 
 
@@ -84,7 +90,6 @@ class SigmoidBin(nn.Module):
         result = result.clamp(min=self.min, max=self.max)
 
         return result
-
 
     def training_loss(self, pred, target):
         assert pred.shape[-1] == self.length, 'pred.shape[-1]=%d is not equal to self.length=%d' % (pred.shape[-1], self.length)
@@ -435,8 +440,9 @@ class ComputeLoss:
 
         # Focal loss
         g = h['fl_gamma']  # focal loss gamma
+        alpha = h.get('fl_alpha', 0.25)  # focal loss alpha
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEcls, BCEobj = FocalLoss(BCEcls, g, alpha), FocalLoss(BCEobj, g, alpha)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
@@ -569,8 +575,9 @@ class ComputeLossOTA:
 
         # Focal loss
         g = h['fl_gamma']  # focal loss gamma
+        alpha = h.get('fl_alpha', 0.25)  # focal loss alpha
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEcls, BCEobj = FocalLoss(BCEcls, g, alpha), FocalLoss(BCEobj, g, alpha)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
@@ -642,7 +649,7 @@ class ComputeLossOTA:
         #indices, anch = self.find_4_positive(p, targets)
         #indices, anch = self.find_5_positive(p, targets)
         #indices, anch = self.find_9_positive(p, targets)
-        device = torch.device(targets.device)
+
         matching_bs = [[] for pp in p]
         matching_as = [[] for pp in p]
         matching_gjs = [[] for pp in p]
@@ -682,7 +689,7 @@ class ComputeLossOTA:
                 all_gj.append(gj)
                 all_gi.append(gi)
                 all_anch.append(anch[i][idx])
-                from_which_layer.append((torch.ones(size=(len(b),)) * i).to(device))
+                from_which_layer.append(torch.ones(size=(len(b),)) * i)
                 
                 fg_pred = pi[b, a, gj, gi]                
                 p_obj.append(fg_pred[:, 4:5])
@@ -739,7 +746,7 @@ class ComputeLossOTA:
                 + 3.0 * pair_wise_iou_loss
             )
 
-            matching_matrix = torch.zeros_like(cost, device=device)
+            matching_matrix = torch.zeros_like(cost)
 
             for gt_idx in range(num_gt):
                 _, pos_idx = torch.topk(
@@ -753,10 +760,9 @@ class ComputeLossOTA:
                 _, cost_argmin = torch.min(cost[:, anchor_matching_gt > 1], dim=0)
                 matching_matrix[:, anchor_matching_gt > 1] *= 0.0
                 matching_matrix[cost_argmin, anchor_matching_gt > 1] = 1.0
-            fg_mask_inboxes = (matching_matrix.sum(0) > 0.0).to(device)
+            fg_mask_inboxes = matching_matrix.sum(0) > 0.0
             matched_gt_inds = matching_matrix[:, fg_mask_inboxes].argmax(0)
-        
-            from_which_layer = from_which_layer[fg_mask_inboxes]
+            from_which_layer = from_which_layer[fg_mask_inboxes.cpu()]
             all_b = all_b[fg_mask_inboxes]
             all_a = all_a[fg_mask_inboxes]
             all_gj = all_gj[fg_mask_inboxes]
@@ -863,8 +869,9 @@ class ComputeLossBinOTA:
 
         # Focal loss
         g = h['fl_gamma']  # focal loss gamma
+        alpha = h.get('fl_alpha', 0.25)  # focal loss alpha
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEcls, BCEobj = FocalLoss(BCEcls, g, alpha), FocalLoss(BCEobj, g, alpha)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
@@ -1189,8 +1196,9 @@ class ComputeLossAuxOTA:
 
         # Focal loss
         g = h['fl_gamma']  # focal loss gamma
+        alpha = h.get('fl_alpha', 0.25)  # focal loss alpha
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            BCEcls, BCEobj = FocalLoss(BCEcls, g, alpha), FocalLoss(BCEobj, g, alpha)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
