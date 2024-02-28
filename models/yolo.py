@@ -1,23 +1,49 @@
 import argparse
 import logging
 import sys
+from typing import Callable
 from copy import deepcopy
 
 sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 logger = logging.getLogger(__name__)
 import torch
-from models.common import *
-from models.experimental import *
+from .common import *
+from .experimental import *
+
 from utils.autoanchor import check_anchor_order
 from utils.general import make_divisible, check_file, set_logging
-from utils.torch_utils import time_synchronized, fuse_conv_and_bn, model_info, scale_img, initialize_weights, \
-    select_device, copy_attr
+from utils.torch_utils import (time_synchronized,
+                               fuse_conv_and_bn,
+                               model_info,
+                               scale_img,
+                               initialize_weights,
+                               select_device,
+                               copy_attr)
 from utils.loss import SigmoidBin
 
 try:
     import thop  # for FLOPS computation
 except ImportError:
     thop = None
+
+
+# ISAAC's Addition
+class SE(nn.Module):
+    """
+    Squeeze and Excitation attention. This is a channel-wise attention model to recalibrate channels in a simple, but
+    effective way.
+    """
+
+    def __init__(self, input_channels, scale_activation: Callable[..., torch.nn.Module] = torch.nn.Sigmoid,):
+        super().__init__()
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.dense = nn.Conv2d(input_channels, input_channels, 1)
+        self.scale_activation = scale_activation()
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        w = self.pool(inputs)
+        w = self.dense(w)
+        return self.scale_activation(w) * inputs
 
 
 class Detect(nn.Module):
@@ -781,6 +807,9 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             args = [ch[f]]
         elif m is Concat:
             c2 = sum([ch[x] for x in f])
+        # ISAAC's addition
+        elif m is SE:
+            c2 = args[0]
         elif m is Chuncat:
             c2 = sum([ch[x] for x in f])
         elif m is Shortcut:
