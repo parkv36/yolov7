@@ -3,7 +3,7 @@ import random
 import torch
 import torch.nn as nn
 
-from common import Conv, DWConv
+from .common import Conv, DWConv
 
 
 class CrossConv(nn.Module):
@@ -241,7 +241,7 @@ class End2End(nn.Module):
 
 
 def attempt_load(weights, map_location=None, run_attempt_download=True):
-    from utils.google_utils import attempt_download
+    from yolov7.utils.google_utils import attempt_download
 
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
     model = Ensemble()
