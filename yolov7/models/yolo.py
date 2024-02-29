@@ -10,16 +10,16 @@ import torch
 from .common import *
 from .experimental import *
 
-from utils.autoanchor import check_anchor_order
-from utils.general import make_divisible, check_file, set_logging
-from utils.torch_utils import (time_synchronized,
+from yolov7.utils.autoanchor import check_anchor_order
+from yolov7.utils.general import make_divisible, check_file, set_logging
+from yolov7.utils.torch_utils import (time_synchronized,
                                fuse_conv_and_bn,
                                model_info,
                                scale_img,
                                initialize_weights,
                                select_device,
                                copy_attr)
-from utils.loss import SigmoidBin
+from yolov7.utils.loss import SigmoidBin
 
 try:
     import thop  # for FLOPS computation

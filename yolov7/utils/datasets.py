@@ -26,7 +26,7 @@ from copy import deepcopy
 from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 
-from utils.general import (check_requirements,
+from yolov7.utils.general import (check_requirements,
                            xyxy2xywh,
                            xywh2xyxy,
                            xywhn2xyxy,
@@ -35,10 +35,10 @@ from utils.general import (check_requirements,
                            segments2boxes,
                            resample_segments,
                            clean_str)
-from utils.preprocessing import remove_ambiguous_classes
-from utils.torch_utils import torch_distributed_zero_first
-from utils.generators import Yolov7Generator
-from utils.generators import get_indices
+from yolov7.utils.preprocessing import remove_ambiguous_classes
+from yolov7.utils.torch_utils import torch_distributed_zero_first
+from yolov7.utils.generators import Yolov7Generator
+from yolov7.utils.generators import get_indices
 
 
 # Parameters

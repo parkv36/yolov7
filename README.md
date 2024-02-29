@@ -110,6 +110,107 @@ python -m torch.distributed.launch --nproc_per_node 4 --master_port 9527 train.p
 python -m torch.distributed.launch --nproc_per_node 8 --master_port 9527 train_aux.py --workers 8 --device 0,1,2,3,4,5,6,7 --sync-bn --batch-size 128 --data data/coco.yaml --img 1280 1280 --cfg cfg/training/yolov7-w6.yaml --weights '' --name yolov7-w6 --hyp data/hyp.scratch.p6.yaml
 ```
 
+<a name="code_additions"/>
+
+#### Forked code additions
+This sections illustrates the changes added to main code in this fork.
+
+There are three main additions:
+1. Custom augmentations: This permits the addition of new augmentations not present in the ultralytics pipeline.
+2. Excluding bounding boxes: This enables the training process to remove specific classes from the images. 
+3. Biasing data using labels: This allows the user to select what classes are going to appear more freqently in the training.
+4. A Squeeze and Excitation Block has been added, which can be used between the neck and head.
+
+The first three additions can be used in the code as follows:
+```python
+from vyn_yolov7 import Setting
+from train import run_train
+
+# relative ratio of the classes. For instance, imagine we have two classes: class1 and class2.
+# If we want the class2 to be picked twice as class1, then we do
+probabilities = {
+    'class1': 1.0,
+    'class2': 2.0,
+}
+
+options = Setting()
+options.shuffle_class = True
+options.probabilities = probabilities
+options.custom_augment_fun = custom_augmentations
+options.data = 'PATH/TO/YAML_FILE.yaml'
+
+run_train(options)
+```
+
+The custom augmentation is a function that receives the image and bounding boxes as numpy arrays 
+and returns the modified image and bounding boxe
+
+An illustration of an augmentation function is presented below:
+
+```python
+def custom_augmentation(image, bounding_boxes):
+    .
+    .
+    .
+    return augmented_image, augmented_bounding_boxes
+```
+
+In order to perform the removal of bounding boxes from images the fields `excluded_classes` and `mapping_classes` 
+from the yaml are used. The purpose of this addition is the following: Imagine that we have a small dataset of people. 
+In this dataset, each individual person is labelled, but in the dataset there are also hands, heads and other parts of 
+the human body, but very few of them. In order to get an initial model, it would be convenient not to use these objects, 
+but we do want to keep using those images because complete persons may be in those images as well. 
+
+To solve this issue, this code allows the user to select a set of classes that are going to be removed, meaning the
+objects in the images will be replaced with random noise.
+
+The bounding boxes in training and validation contain the classes that are being represented.
+These classes are going to be integers from 0 to `nc_complete`, in contrast to `nc` as in the original code.
+The `nc` represents the number of classes that are going to be detected whereas `nc_complete` is the total number of
+classes in the dataset.
+
+An example of these variables is shown below:
+
+The `nc_complete` must be passed to the yaml file together with the other two parameters. An example of this yaml file is:
+
+```commandline
+excluded_classes:
+- 3
+mapping_classes:
+  0: 0
+  1: 1
+  2: 2
+names:
+- fire_extinguisher_shell
+- forklift
+- ladder
+nc: 3
+nc_complete: 4
+train: PATH/TO/training.txt
+val: PATH/TO/validation.txt
+```
+This means that in the dataset there will be 4 classes, the first three are normal ones and they will work in the same
+way as the original yolov7 code, but the fourth class (index number 3) will be excluded, so the bounding box will not 
+be used for training, but the section of the image inside that bounding box will be changed for noise.
+
+Lastly, the `shuffle_class` and `probabilities` are used to bias the dataset when needed. 
+It allows to pass the relative rate of each class. 
+For instance, if we have 3 classes: `barrier`, `manhole` and `water_barrier` and we want the class `manhole` to
+be used twice as much as the other two since this class seems to be harder for the model to train it properly. Then,
+
+```python
+probabilities = {'barrier': 1, 'manhole': 2, 'water_barrier': 1}
+```
+
+Notice the `shuffle_class` is used to radomly select data from a class or to use all the dataset as is. 
+So, if `shuffle_class` is False (default behaviour and the only one in the original code) then all the 
+dataset will be used, for instance, if there are 100 images (80 of class `barrier` and 20 of the rests) 
+the 100 images will be used per epoch. When `shuffle_class` is True, the training
+will select each class with equal probability regardless of the number of images of each class. So, 'barrier', 
+'manhole', 'water_barrier' will be selected with the same probability even when 'barrier' is more common.
+If `probabilities` is provided then the classes will be selected following that rate instead of with
+equal probability.
+
 ## Transfer learning
 
 [`yolov7_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7_training.pt) [`yolov7x_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7x_training.pt) [`yolov7-w6_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-w6_training.pt) [`yolov7-e6_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-e6_training.pt) [`yolov7-d6_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-d6_training.pt) [`yolov7-e6e_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-e6e_training.pt)

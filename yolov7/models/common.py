@@ -13,14 +13,14 @@ from PIL import Image
 from torch.cuda import amp
 
 # ISAAC's Addition
-from utils.datasets import letterbox
-from utils.general import (non_max_suppression,
+from yolov7.utils.datasets import letterbox
+from yolov7.utils.general import (non_max_suppression,
                            make_divisible,
                            scale_coords,
                            increment_path,
                            xyxy2xywh)
 
-from utils.torch_utils import time_synchronized
+from yolov7.utils.torch_utils import time_synchronized
 
 
 ##### basic ####
@@ -956,7 +956,7 @@ class Detections:
         self.s = shape  # inference BCHW shape
 
     def display(self, pprint=False, show=False, save=False, render=False, save_dir=''):
-        from utils.plots import color_list, plot_one_box
+        from yolov7.utils.plots import color_list, plot_one_box
 
         colors = color_list()
         for i, (img, pred) in enumerate(zip(self.imgs, self.pred)):
