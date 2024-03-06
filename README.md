@@ -116,7 +116,7 @@ python -m torch.distributed.launch --nproc_per_node 8 --master_port 9527 train_a
 This sections illustrates the changes added to main code in this fork.
 
 There are three main additions:
-1. Custom augmentations: This permits the addition of new augmentations not present in the ultralytics pipeline.
+1. Custom augmentations: This permits the addition of new augmentations not present in the yolov7 pipeline.
 2. Excluding bounding boxes: This enables the training process to remove specific classes from the images. 
 3. Biasing data using labels: This allows the user to select what classes are going to appear more freqently in the training.
 4. A Squeeze and Excitation Block has been added, which can be used between the neck and head.
@@ -143,7 +143,7 @@ run_train(options)
 ```
 
 The custom augmentation is a function that receives the image and bounding boxes as numpy arrays 
-and returns the modified image and bounding boxe
+and returns the modified image and bounding boxes
 
 An illustration of an augmentation function is presented below:
 
