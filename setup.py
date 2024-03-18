@@ -10,7 +10,7 @@ https://pypi.org/project/setuptools-scm/
 from setuptools import setup, find_packages
 
 setup(
-    name='model_poc_detector',
+    name='vyn-yolov7',
     package_dir={'': '.'},
     packages=find_packages(),
     python_requires='>=3.9, <4',
@@ -22,9 +22,9 @@ setup(
     },
     #scripts=[''],
     install_requires=[
-        'numpy>=1.24',
-        'ai-model-utils @ git+ssh://git@github.com/humanLearning/ai-model-utils@v5.10.5',
-        'torch>=2.0.0', 'torchaudio>=2.0.1', 'torchvision>=0.15.1'
+        'numpy>=1.24', 'pandas>=2.1', 'pyaml>=21.10'
+        'torch>=2.0.0', 'torchaudio>=2.0.1', 'torchvision>=0.15.1',
+        'opencv-python>=4.8.1', 'scikit-video>=1.1', 'tqdm>=4.66'
     ],
     extras_require={}
 )
