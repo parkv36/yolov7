@@ -22,7 +22,7 @@ setup(
     },
     #scripts=[''],
     install_requires=[
-        'numpy>=1.24', 'pandas>=2.1', 'pyaml>=21.10'
+        'numpy>=1.24', 'pandas>=2.1', 'pyaml>=21.10',
         'torch>=2.0.0', 'torchaudio>=2.0.1', 'torchvision>=0.15.1',
         'opencv-python>=4.8.1', 'scikit-video>=1.1', 'tqdm>=4.66'
     ],
