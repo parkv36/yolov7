@@ -2,7 +2,7 @@ import argparse
 import logging
 import sys
 from copy import deepcopy
-
+#测试提交流程
 sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 logger = logging.getLogger(__name__)
 import torch
@@ -72,6 +72,9 @@ class Detect(nn.Module):
         elif self.concat:
             out = torch.cat(z, 1)
         else:
+            
+            
+            
             out = (torch.cat(z, 1), x)
 
         return out
