@@ -18,8 +18,9 @@ setup(
     setup_requires=['setuptools_scm'],
     package_data={
         # include any txt files in Data
-        '': ['data/*.txt']
+        '': ['data/*.txt', '*.yaml']
     },
+    include_package_data=True,
     #scripts=[''],
     install_requires=[
         'numpy>=1.24', 'pandas>=2.1', 'pyaml>=21.10',
