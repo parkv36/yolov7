@@ -703,3 +703,8 @@ if __name__ == '__main__':
         plot_evolution(yaml_file)
         print(f'Hyperparameter evolution complete. Best results saved as: {yaml_file}\n'
               f'Command to train a new model with these hyperparameters: $ python train.py --hyp {yaml_file}')
+
+
+"""
+python train.py --workers 8 --device 'cpu' --batch-size 32 --data data/coco.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --hyp data/hyp.scratch.p5.yaml
+"""

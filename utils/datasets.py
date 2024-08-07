@@ -29,7 +29,7 @@ from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
     resample_segments, clean_str
 from utils.torch_utils import torch_distributed_zero_first
-
+# @@HK :  pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 resolve h\lib\fbgemm.dll" or one of its dependencies on Windows
 # Parameters
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
@@ -358,7 +358,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
-        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
+        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)  @@ HK TODO: disable mosaic
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path        
@@ -570,12 +570,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # Augment imagespace
             if not mosaic:
-                img, labels = random_perspective(img, labels,
-                                                 degrees=hyp['degrees'],
-                                                 translate=hyp['translate'],
-                                                 scale=hyp['scale'],
-                                                 shear=hyp['shear'],
-                                                 perspective=hyp['perspective'])
+                if not hyp['tir_od']:
+                    img, labels = random_perspective(img, labels,
+                                                     degrees=hyp['degrees'],
+                                                     translate=hyp['translate'],
+                                                     scale=hyp['scale'],
+                                                     shear=hyp['shear'],
+                                                     perspective=hyp['perspective'])
             
             
             #img, labels = self.albumentations(img, labels)

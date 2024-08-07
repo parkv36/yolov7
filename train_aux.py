@@ -558,6 +558,8 @@ if __name__ == '__main__':
     parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--tir-od', action='store_true', help='TIR Object Detection')
+
     opt = parser.parse_args()
 
     # Set DDP variables
@@ -697,3 +699,10 @@ if __name__ == '__main__':
         plot_evolution(yaml_file)
         print(f'Hyperparameter evolution complete. Best results saved as: {yaml_file}\n'
               f'Command to train a new model with these hyperparameters: $ python train.py --hyp {yaml_file}')
+
+
+"""
+python train.py --workers 8 --device 0 --batch-size 32 --data data/coco.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights '' --name yolov7 --hyp data/hyp.scratch.p5.yaml
+
+
+"""

@@ -194,3 +194,7 @@ if __name__ == '__main__':
                 strip_optimizer(opt.weights)
         else:
             detect()
+
+"""
+python detect.py --weights yolov7.pt --conf 0.25 --img-size 640 --source inference/images/horses.jpg
+"""
