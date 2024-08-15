@@ -76,7 +76,9 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       pad=pad,
                                       image_weights=image_weights,
                                       prefix=prefix,
-                                      rel_path_images=rel_path_images)
+                                      rel_path_images=rel_path_images,
+                                      scaling_type=opt.norm_type,
+                                      input_channels=opt.input_channels)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -353,16 +355,23 @@ def img2label_paths(img_paths):
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
-                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images=''):
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
+                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3):
+
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
-        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)  @@ HK TODO: disable mosaic
+        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)  @@ HK TODO: disable mosaic implicitly by prob mosaic =0
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
-        self.path = path        
+        self.path = path
+        self.scaling_type = scaling_type
+        self.percentile = img_percentile_removal
+        self.beta = beta
+        self.input_channels = input_channels# in case GL image but NN is RGB hence replicate
+
         #self.albumentations = Albumentations() if augment else None
 
         try:
@@ -536,6 +545,35 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     #self.shuffled_vector = np.random.permutation(self.nF) if self.augment else np.arange(self.nF)
     #     return self
 
+    def scaling_image(self, img):
+        if self.scaling_type == 'standardization': # default by repo
+            img = img/ 255.0
+
+        elif self.scaling_type =="single_image_0_to_1":
+            max1 = np.max(img.ravel())
+            min1 = np.min(img.ravel())
+            img = (img - min1) / (max1 - min1)
+
+        elif self.scaling_type == 'single_image_mean_std':
+            img = (img - img.ravel().mean()) / img.ravel().std()
+
+        elif self.scaling_type == 'single_image_percentile_0_1':
+            min_val = np.percentile(img.ravel(), self.percentile)
+            max_val = np.percentile(img.ravel(), 100-self.percentile)
+            img = np.double(img - min_val) / np.double(max_val - min_val)
+            img = np.minimum(np.maximum(img, 0), 1)
+
+        elif self.scaling_type == 'remove+global_outlier_0_1':
+            img = np.double(img - img.min()*(self.beta))/np.double(img.max()*(1-self.beta) - img.min()*(self.beta))  # beta in [percentile]
+            img = np.double(np.minimum(np.maximum(img, 0), 1))
+        elif self.scaling_type == 'normalization_uint16':
+            raise ValueError("normalization norm image method was not imp yet.")
+        elif self.scaling_type == 'normalization':
+            raise ValueError("normalization norm image method was not imp yet.")
+        else:
+            raise ValueError("Unknown norm image method")
+
+        return img
     def __getitem__(self, index):
         index = self.indices[index]  # linear, shuffled, or image_weights
 
@@ -575,19 +613,23 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if self.augment:
             # Augment imagespace
             if not mosaic:
-                if not hyp['tir_od']:
+                if hyp['random_perspective']:
                     img, labels = random_perspective(img, labels,
                                                      degrees=hyp['degrees'],
                                                      translate=hyp['translate'],
                                                      scale=hyp['scale'],
                                                      shear=hyp['shear'],
                                                      perspective=hyp['perspective'])
-            
+            if random.random() < hyp['inversion']:
+                img = inversion_aug(img)
+    #             GL gain/attenuation
+    # Squeeze pdf (x-mu)*scl+mu
+
             
             #img, labels = self.albumentations(img, labels)
-
+            if hyp['hsv_h'] >0 or hyp['hsv_s'] >0 or hyp['hsv_v'] >0 :
             # Augment colorspace
-            augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+                augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
 
             # Apply cutouts
             # if random.random() < 0.9:
@@ -628,8 +670,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
 
-        # Convert
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        if img.ndim > 2: # GL no permute
+            # Convert
+            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        else:
+            # img = img[np.newaxis,...] # unsqueeze
+            img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0)
+
+
+        img = self.scaling_image(img)
         img = np.ascontiguousarray(img)
 
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
@@ -674,7 +723,11 @@ def load_image(self, index):
     img = self.imgs[index]
     if img is None:  # not cached
         path = self.img_files[index]
-        img = cv2.imread(path)  # BGR
+        #16bit unsigned
+        if os.path.basename(path).split('.')[-1] == 'tiff':
+            img = cv2.imread(path, -1)
+        else:
+            img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
         r = self.img_size / max(h0, w0)  # resize image to img_size
@@ -698,6 +751,13 @@ def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
 
     img_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val))).astype(dtype)
     cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
+
+def inversion_aug(img):
+    if img.dtype == np.uint16 or img.dtype == np.int8:
+        img = np.iinfo(img.dtype).max - img
+        return img
+    else:
+        raise ValueError("image type is not supported (int8, UINT16) {}".format(img.dtype))
 
 
 def hist_equalize(img, clahe=True, bgr=False):
