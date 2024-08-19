@@ -393,7 +393,7 @@ def train(hyp, opt, device, tb_writer=None):
                 # Plot
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets, paths, f, opt.input_channels), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(torch.jit.trace(model, imgs, strict=False), [])  # add model graph
@@ -418,6 +418,7 @@ def train(hyp, opt, device, tb_writer=None):
                 results, maps, times = test.test(data_dict,
                                                  batch_size=batch_size * 2,
                                                  imgsz=imgsz_test,
+                                                 save_json=True,
                                                  model=ema.ema,
                                                  single_cls=opt.single_cls,
                                                  dataloader=testloader,
@@ -715,7 +716,15 @@ if __name__ == '__main__':
 
 
 """
+TODO
+Anchors,
+    hyp['anchor_t'] = 4 let the AR<=4 => TODO check if valid 
+    Ive reduced anchors to 2 per anchors: 2
+Sampler : torch_weighted : WeightedRandomSampler
+
+
 python train.py --workers 8 --device 'cpu' --batch-size 32 --data data/coco.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --hyp data/hyp.scratch.p5.yaml
 --workers 8 --device cpu --batch-size 32 --data data/tir_od.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --cache-images --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1
 --workers 8 --device cpu --batch-size 32 --data data/tir_od.yaml --img 640 640 --cfg cfg/training/yolov7-tiny.yaml --weights 'v7' --name yolov7 --cache-images --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --multi-scale
+--multi-scale training with resized image resolution not good for TIR
 """

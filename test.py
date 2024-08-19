@@ -103,15 +103,18 @@ def test(data,
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        if 1:
+            assert (img.shape[-1] == 640)
+        img = img.half() if half else img.float()
+        # uint8 to fp16/32
+        # img /= 255.0  # 0 - 255 to 0.0 - 1.0 c# already done inside dataloader
         targets = targets.to(device)
         nb, _, height, width = img.shape  # batch size, channels, height, width
 
         with torch.no_grad():
             # Run model
             t = time_synchronized()
-            out, train_out = model(img, augment=augment)  # inference and training outputs
+            out, train_out = model(img, augment=augment)  # inference(4 coordination, obj conf, cls conf ) and training outputs(un normalized coordination in yolo format and 3 scales diferent outputs) (2,2,80,80,7), (2,2,40,40,7)  : 640/8=40
             t0 += time_synchronized() - t
 
             # Compute loss
@@ -139,7 +142,7 @@ def test(data,
                 continue
 
             # Predictions
-            predn = pred.clone()
+            predn = pred.clone() # *xyxy, conf, cls in predn  [x y ,w ,h, conf, cls]
             scale_coords(img[si].shape[1:], predn[:, :4], shapes[si][0], shapes[si][1])  # native-space pred
 
             # Append to text file
