@@ -62,8 +62,9 @@ def test(data,
         if trace:
             model = TracedModel(model, device, imgsz)
 
+    #torch.backends.cudnn.benchmark = True  ##uses the inbuilt cudnn auto-tuner to find the fastest convolution algorithms. -
     # Half
-    half = device.type != 'cpu' and half_precision  # half precision only supported on CUDA
+    half = device.type != 'cpu' and half_precision  # half precision only supported on CUDA @@ HK : TODO what are the consequences  add :
     if half:
         model.half()
 
@@ -103,8 +104,6 @@ def test(data,
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
-        if 1:
-            assert (img.shape[-1] == 640)
         img = img.half() if half else img.float()
         # uint8 to fp16/32
         # img /= 255.0  # 0 - 255 to 0.0 - 1.0 c# already done inside dataloader
@@ -215,7 +214,7 @@ def test(data,
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images
-        if plots and batch_i < 3:
+        if plots and batch_i < 10 or 1:
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
@@ -255,7 +254,7 @@ def test(data,
         wandb_logger.log({"Bounding Box Debugger/Images": wandb_images})
 
     # Save JSON
-    if save_json and len(jdict):
+    if save_json and len(jdict): # @@ HK TODO:
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
         anno_json = './coco/annotations/instances_val2017.json'  # annotations json
         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json

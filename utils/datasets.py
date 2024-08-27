@@ -31,6 +31,8 @@ from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, 
 from utils.torch_utils import torch_distributed_zero_first
 # @@HK :  pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 resolve h\lib\fbgemm.dll" or one of its dependencies on Windows
 # Parameters
+def flatten(lst): return [x for l in lst for x in l]
+
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
 vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
@@ -63,7 +65,7 @@ def exif_size(img):
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
-                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='',rel_path_images=''):
+                      rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='',rel_path_images='', num_cls=-1):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
@@ -78,7 +80,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       prefix=prefix,
                                       rel_path_images=rel_path_images,
                                       scaling_type=opt.norm_type,
-                                      input_channels=opt.input_channels)
+                                      input_channels=opt.input_channels,
+                                      num_cls=num_cls)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -356,7 +359,8 @@ def img2label_paths(img_paths):
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
-                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3):
+                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3,
+                 num_cls=-1):
 
         self.img_size = img_size
         self.augment = augment
@@ -386,7 +390,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         t = t.read().strip().splitlines()
                         parent = str(p.parent) + os.sep
                         if bool(rel_path_images):
-                            f += [os.path.join(rel_path_images, x.replace('./', '')) if x.startswith('./') else x for x in t]  # local to global path
+                            f += [os.path.join(rel_path_images, x.replace('./', '')).rstrip() if x.startswith('./') else x for x in t]  # local to global path
                         else:
                             f += [x.replace('./', parent) if x.startswith('./') else x for x in t]  # local to global path
 
@@ -399,7 +403,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         except Exception as e:
             raise Exception(f'{prefix}Error loading data from {path}: {e}\nSee {help_url}')
 
-        # Check cache
+        # Check cache HK : cache is only for labels /annotations
         self.label_files = img2label_paths(self.img_files)  # labels
         cache_path = (p if p.is_file() else Path(self.label_files[0]).parent).with_suffix('.cache')  # cached labels
         if cache_path.is_file():
@@ -407,7 +411,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             #if cache['hash'] != get_hash(self.label_files + self.img_files) or 'version' not in cache:  # changed
             #    cache, exists = self.cache_labels(cache_path, prefix), False  # re-cache
         else:
-            cache, exists = self.cache_labels(cache_path, prefix), False  # cache
+            cache, exists = self.cache_labels(num_cls, cache_path, prefix), False  # cache
 
         # Display cache
         nf, nm, ne, nc, n = cache.pop('results')  # found, missing, empty, corrupted, total
@@ -481,7 +485,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
             pbar.close()
 
-    def cache_labels(self, path=Path('./labels.cache'), prefix=''):
+    def cache_labels(self, num_cls, path=Path('./labels.cache'), prefix=''):
         # Cache dataset labels, check images and read shapes
         x = {}  # dict
         nm, nf, ne, nc = 0, 0, 0, 0  # number missing, found, empty, duplicate
@@ -511,6 +515,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         assert (l >= 0).all(), 'negative labels'
                         assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
                         assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
+                        assert (l[:, 0].max() < num_cls), 'class label out of range -- invalid' # max label can't be greater than num of labels
+                        # print(l[:, 0])
+
+
                     else:
                         ne += 1  # label empty
                         l = np.zeros((0, 5), dtype=np.float32)
@@ -677,10 +685,23 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # img = img[np.newaxis,...] # unsqueeze
             img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0)
 
+        # print('\n image file', self.img_files[index])
+        if 0:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.hist(img.ravel(), bins=128)
+            plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre'))
 
         img = self.scaling_image(img)
-        img = np.ascontiguousarray(img)
+        if 0:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.hist(img.ravel(), bins=128)
+            plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]))
 
+        # print('\n 1st', img.shape)
+        img = np.ascontiguousarray(img)
+        # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
 
     @staticmethod

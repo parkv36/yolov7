@@ -177,8 +177,8 @@ def train(hyp, opt, device, tb_writer=None):
             if hasattr(v.rbr_dense, 'vector'):   
                 pg0.append(v.rbr_dense.vector)
 
-    if opt.adam:
-        optimizer = optim.Adam(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
+    if opt.adam: # @@ HK AdamW() is a fix for Adam due to Wdecay/L2 loss bug
+        optimizer = optim.AdamW(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
     else:
         optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
 
@@ -195,6 +195,9 @@ def train(hyp, opt, device, tb_writer=None):
         lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # plot_lr_scheduler(optimizer, scheduler, epochs)
+    from utils.plots import plot_lr_scheduler
+    plot_lr_scheduler(optimizer, scheduler, epochs, save_dir='/home/hanoch/projects/tir_od')
+
 
     # EMA
     ema = ModelEMA(model) if rank in [-1, 0] else None
@@ -246,18 +249,21 @@ def train(hyp, opt, device, tb_writer=None):
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '),
-                                            rel_path_images=images_parent_folder)
+                                            rel_path_images=images_parent_folder, num_cls=data_dict['nc'])
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
     # Process 0
     if rank in [-1, 0]:
-        testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
-                                       hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
+        testloader , test_dataset = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
+                                       hyp=hyp, cache=opt.cache_images and not opt.notest, rect=False, rank=-1, # @@@ rect was True why?
                                        world_size=opt.world_size, workers=opt.workers,
                                        pad=0.5, prefix=colorstr('val: '),
-                                       rel_path_images=images_parent_folder)[0]
+                                       rel_path_images=images_parent_folder, num_cls=data_dict['nc'])
+
+        mlc = np.concatenate(test_dataset.labels, 0)[:, 0].max()  # max label class
+        assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (        mlc, nc, opt.data, nc - 1)
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -406,8 +412,10 @@ def train(hyp, opt, device, tb_writer=None):
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
+        print("Lr : ", 10*'+',lr)
         scheduler.step()
-
+        if 1:  #@@ HK
+            plots = True
         # DDP process 0 or single-GPU
         if rank in [-1, 0]:
             # mAP
@@ -721,7 +729,7 @@ Anchors,
     hyp['anchor_t'] = 4 let the AR<=4 => TODO check if valid 
     Ive reduced anchors to 2 per anchors: 2
 Sampler : torch_weighted : WeightedRandomSampler
-
+PP-YOLO bumps the batch size up from 64 to 192. Of course, this is hard to implement if you have GPU memory constraints.
 
 python train.py --workers 8 --device 'cpu' --batch-size 32 --data data/coco.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --hyp data/hyp.scratch.p5.yaml
 --workers 8 --device cpu --batch-size 32 --data data/tir_od.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --cache-images --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1

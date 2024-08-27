@@ -418,7 +418,7 @@ class APLoss(torch.autograd.Function):
         g1, =ctx.saved_tensors
         return g1*out_grad1, None, None
 
-
+# Dual obj and cls losses and outputs inherited from Joseph Redmon's original YOLOv3
 class ComputeLoss:
     # Compute losses
     def __init__(self, model, autobalance=False):
