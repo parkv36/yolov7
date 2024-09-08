@@ -137,7 +137,7 @@ def plot_images_and_masks(images, targets, masks, paths=None, fname='images.jpg'
                         if mh != h or mw != w:
                             mask = image_masks[j].astype(np.uint8)
                             mask = cv2.resize(mask, (w, h))
-                            mask = mask.astype(np.bool)
+                            mask = mask.astype(bool)
                         else:
                             mask = image_masks[j].astype(np.bool)
                         with contextlib.suppress(Exception):
