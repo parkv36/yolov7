@@ -62,6 +62,49 @@ def exif_size(img):
         pass
 
     return s
+def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
+    if scaling_type == 'standardization': # default by repo
+        img = img/ 255.0
+
+    elif scaling_type =="single_image_0_to_1":
+        max_val = np.max(img.ravel())
+        min_val = np.min(img.ravel())
+        img = np.double(img - min_val) / np.double(max_val - min_val)
+        img = np.minimum(np.maximum(img, 0), 1)
+
+    elif scaling_type == 'single_image_mean_std':
+        img = (img - img.ravel().mean()) / img.ravel().std()
+
+    elif scaling_type == 'single_image_percentile_0_1':
+        min_val = np.percentile(img.ravel(), percentile)
+        max_val = np.percentile(img.ravel(), 100-percentile)
+        img = np.double(img - min_val) / np.double(max_val - min_val)
+        img = np.minimum(np.maximum(img, 0), 1)
+
+    elif scaling_type == 'single_image_percentile_0_255':
+        # min_val = np.percentile(img.ravel(), percentile)
+        # max_val = np.percentile(img.ravel(), 100 - percentile)
+        # img = np.double(img - min_val) / np.double(max_val - min_val)
+        # img = np.uint8(np.minimum(np.maximum(img, 0), 1)*255)
+        ImgMin = np.percentile(img, percentile)
+        ImgMax = np.percentile(img, 100-percentile)
+        ImgDRC = (np.double(img - ImgMin) / np.double(ImgMax - ImgMin)) * 255
+        img_temp = (np.uint8(np.minimum(np.maximum(ImgDRC, 0), 255)))
+        # img_temp = img_temp / 255.0
+        return img_temp
+
+
+    elif scaling_type == 'remove+global_outlier_0_1':
+        img = np.double(img - img.min()*(beta))/np.double(img.max()*(1-beta) - img.min()*(beta))  # beta in [percentile]
+        img = np.double(np.minimum(np.maximum(img, 0), 1))
+    elif scaling_type == 'normalization_uint16':
+        raise ValueError("normalization norm image method was not imp yet.")
+    elif scaling_type == 'normalization':
+        raise ValueError("normalization norm image method was not imp yet.")
+    else:
+        raise ValueError("Unknown norm image method")
+
+    return img
 
 
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
@@ -81,7 +124,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       rel_path_images=rel_path_images,
                                       scaling_type=opt.norm_type,
                                       input_channels=opt.input_channels,
-                                      num_cls=num_cls)
+                                      num_cls=num_cls,
+                                      drc_per_ch_percentile=opt.drc_per_ch_percentile)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -132,7 +176,9 @@ class _RepeatSampler(object):
 
 
 class LoadImages:  # for inference
-    def __init__(self, path, img_size=640, stride=32):
+    def __init__(self, path, img_size=640, stride=32,
+                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3):
+
         p = str(Path(path).absolute())  # os-agnostic absolute path
         if '*' in p:
             files = sorted(glob.glob(p, recursive=True))  # glob
@@ -159,6 +205,11 @@ class LoadImages:  # for inference
             self.cap = None
         assert self.nf > 0, f'No images or videos found in {p}. ' \
                             f'Supported formats are:\nimages: {img_formats}\nvideos: {vid_formats}'
+
+        self.scaling_type = scaling_type
+        self.percentile = img_percentile_removal
+        self.beta = beta
+        self.input_channels = input_channels
 
     def __iter__(self):
         self.count = 0
@@ -189,16 +240,44 @@ class LoadImages:  # for inference
         else:
             # Read image
             self.count += 1
-            img0 = cv2.imread(path)  # BGR
+            # img0 = cv2.imread(path)  # BGR
+            # 16bit unsigned
+            if os.path.basename(path).split('.')[-1] == 'tiff':
+                img0 = cv2.imread(path, -1)
+            else:
+                img0 = cv2.imread(path)  # BGR
+
             assert img0 is not None, 'Image Not Found ' + path
             #print(f'image {self.count}/{self.nf} {path}: ', end='')
 
         # Padded resize
         img = letterbox(img0, self.img_size, stride=self.stride)[0]
 
-        # Convert
-        img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+
+        if img.ndim > 2: # GL no permute
+            # Convert
+            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+        else:
+            img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) # convert GL to RGB by replication
+
+        # print('\n image file', self.img_files[index])
+        if 0:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.hist(img.ravel(), bins=128)
+            plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(path).split('.')[0]+ 'pre'))
+
+        img = scaling_image(img, scaling_type=self.scaling_type,
+                            percentile=self.percentile, beta=self.beta)
+
+        if 0:
+            import matplotlib.pyplot as plt
+            plt.figure()
+            plt.hist(img.ravel(), bins=128)
+            plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(path).split('.')[0]+ 'post'))
+
         img = np.ascontiguousarray(img)
+
 
         return path, img, img0, self.cap
 
@@ -359,8 +438,8 @@ def img2label_paths(img_paths):
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
-                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3,
-                 num_cls=-1):
+                 scaling_type='standardization', input_channels=3,
+                 num_cls=-1, drc_per_ch_percentile=False):
 
         self.img_size = img_size
         self.augment = augment
@@ -372,9 +451,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.stride = stride
         self.path = path
         self.scaling_type = scaling_type
-        self.percentile = img_percentile_removal
-        self.beta = beta
+        self.percentile = hyp['img_percentile_removal']
+        self.beta = hyp['beta']
         self.input_channels = input_channels# in case GL image but NN is RGB hence replicate
+        self.drc_per_ch_percentile = drc_per_ch_percentile
 
         #self.albumentations = Albumentations() if augment else None
 
@@ -553,35 +633,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     #self.shuffled_vector = np.random.permutation(self.nF) if self.augment else np.arange(self.nF)
     #     return self
 
-    def scaling_image(self, img):
-        if self.scaling_type == 'standardization': # default by repo
-            img = img/ 255.0
-
-        elif self.scaling_type =="single_image_0_to_1":
-            max1 = np.max(img.ravel())
-            min1 = np.min(img.ravel())
-            img = (img - min1) / (max1 - min1)
-
-        elif self.scaling_type == 'single_image_mean_std':
-            img = (img - img.ravel().mean()) / img.ravel().std()
-
-        elif self.scaling_type == 'single_image_percentile_0_1':
-            min_val = np.percentile(img.ravel(), self.percentile)
-            max_val = np.percentile(img.ravel(), 100-self.percentile)
-            img = np.double(img - min_val) / np.double(max_val - min_val)
-            img = np.minimum(np.maximum(img, 0), 1)
-
-        elif self.scaling_type == 'remove+global_outlier_0_1':
-            img = np.double(img - img.min()*(self.beta))/np.double(img.max()*(1-self.beta) - img.min()*(self.beta))  # beta in [percentile]
-            img = np.double(np.minimum(np.maximum(img, 0), 1))
-        elif self.scaling_type == 'normalization_uint16':
-            raise ValueError("normalization norm image method was not imp yet.")
-        elif self.scaling_type == 'normalization':
-            raise ValueError("normalization norm image method was not imp yet.")
-        else:
-            raise ValueError("Unknown norm image method")
-
-        return img
     def __getitem__(self, index):
         index = self.indices[index]  # linear, shuffled, or image_weights
 
@@ -677,27 +728,36 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         labels_out = torch.zeros((nL, 6))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
+        if self.drc_per_ch_percentile:
+            raise # Not imp
+            img = np.repeat(img[np.newaxis, :, :], 3, axis=0)  # convert GL to RGB by replication
+            for chan, drc_percentile in enumerate(hyp['drc_per_ch_percentile']):
+                img_chan = scaling_image(img[chan, :, :], scaling_type=self.scaling_type,
+                                    percentile=drc_percentile, beta=self.beta)
+                img[chan, :, :] = img_chan
 
-        if img.ndim > 2: # GL no permute
-            # Convert
-            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         else:
-            # img = img[np.newaxis,...] # unsqueeze
-            img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0)
+            if img.ndim > 2: # GL no permute
+                # Convert
+                img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+            else:
+                # img = img[np.newaxis,...] # unsqueeze
+                img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
 
-        # print('\n image file', self.img_files[index])
-        if 0:
-            import matplotlib.pyplot as plt
-            plt.figure()
-            plt.hist(img.ravel(), bins=128)
-            plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre'))
+            # print('\n image file', self.img_files[index])
+            if 0:
+                import matplotlib.pyplot as plt
+                plt.figure()
+                plt.hist(img.ravel(), bins=128)
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre_' +str(self.scaling_type)))
 
-        img = self.scaling_image(img)
-        if 0:
-            import matplotlib.pyplot as plt
-            plt.figure()
-            plt.hist(img.ravel(), bins=128)
-            plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]))
+            img = scaling_image(img, scaling_type=self.scaling_type,
+                                percentile=self.percentile, beta=self.beta)
+            if 0:
+                import matplotlib.pyplot as plt
+                plt.figure()
+                plt.hist(img.ravel(), bins=128)
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0] + 'post_'+ str(self.scaling_type)))
 
         # print('\n 1st', img.shape)
         img = np.ascontiguousarray(img)

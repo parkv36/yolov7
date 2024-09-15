@@ -494,3 +494,17 @@ def plot_skeleton_kpts(im, kpts, steps, orig_shape=None):
         if pos2[0] % 640 == 0 or pos2[1] % 640 == 0 or pos2[0]<0 or pos2[1]<0:
             continue
         cv2.line(im, pos1, pos2, (int(r), int(g), int(b)), thickness=2)
+
+
+def append_to_txt(file_path, class_name, images, labels, P, R, map_5, map_5_95):
+    # Format the new line with the provided values
+    formatted_line = f"{class_name:<10} {images:<10} {labels:<10} {P:<10.4f} {R:<10.4f} {map_5:<10.4f} {map_5_95:<10.4f}\n"
+
+    # Open the file in append mode and write the new line
+    with open(file_path, 'a') as file:
+        file.write(formatted_line)
+
+
+# # Example usage:
+# file_path = 'results.txt'
+# append_to_txt(file_path, 'Dog', 500, 1500, 0.85, 0.80, 0.90, 0.75)

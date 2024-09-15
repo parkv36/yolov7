@@ -37,6 +37,28 @@ from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
 
+def compare_models_basic(model1, model2):
+    for ix, (p1, p2) in enumerate(zip(model1.parameters(), model2.parameters())):
+        if p1.data.ne(p2.data).sum() > 0:
+            print('Models are different', ix, p1.data.ne(p2.data).sum())
+            return False
+    return True
+
+
+def compare_models(model1, model2):
+    # Iterate through named layers and parameters of both models
+    for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+        if name1 != name2:
+            print(f"Layer names differ: {name1} vs {name2}")
+
+
+        # Compare the parameters
+        if not torch.equal(param1, param2):
+            print('Difference found in layer{}  {}'.format(name1, param1.data.ne(param2.data).sum()))
+
+    return
+    # print("No differences found in any layer.")
+
 
 def train(hyp, opt, device, tb_writer=None):
     logger.info(colorstr('hyperparameters: ') + ', '.join(f'{k}={v}' for k, v in hyp.items()))
@@ -56,6 +78,8 @@ def train(hyp, opt, device, tb_writer=None):
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.dump(vars(opt), f, sort_keys=False)
 
+
+
     # Configure
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
@@ -63,6 +87,9 @@ def train(hyp, opt, device, tb_writer=None):
     with open(opt.data) as f:
         data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
     is_coco = opt.data.endswith('coco.yaml')
+
+    with open(save_dir / 'data.yaml', 'w') as f:
+        yaml.dump(data_dict, f, sort_keys=False)
 
     # Logging- Doing this before checking the dataset. Might update data_dict
     loggers = {'wandb': None}  # loggers dict
@@ -85,7 +112,7 @@ def train(hyp, opt, device, tb_writer=None):
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(opt.cfg or ckpt['model'].yaml, ch=opt.input_channels, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg or ckpt['model'].yaml, ch=opt.input_channels, nc=nc, anchors=hyp.get('anchors')).to(device)  # create model structure according to yaml and not the checkpoint
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
@@ -115,7 +142,7 @@ def train(hyp, opt, device, tb_writer=None):
     pg0, pg1, pg2 = [], [], []  # optimizer parameter groups
     for k, v in model.named_modules():
         if hasattr(v, 'bias') and isinstance(v.bias, nn.Parameter):
-            pg2.append(v.bias)  # biases
+            pg2.append(v.bias)  # biases # also need to be set to zero
         if isinstance(v, nn.BatchNorm2d):
             pg0.append(v.weight)  # no decay
         elif hasattr(v, 'weight') and isinstance(v.weight, nn.Parameter):
@@ -178,13 +205,24 @@ def train(hyp, opt, device, tb_writer=None):
                 pg0.append(v.rbr_dense.vector)
 
     if opt.adam: # @@ HK AdamW() is a fix for Adam due to Wdecay/L2 loss bug
-        optimizer = optim.AdamW(pg0, lr=hyp['lr0'], betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
+        optimizer = optim.AdamW(pg0, lr=hyp['lr0'], weight_decay=0 , betas=(hyp['momentum'], 0.999))  # adjust beta1 to momentum
     else:
-        optimizer = optim.SGD(pg0, lr=hyp['lr0'], momentum=hyp['momentum'], nesterov=True)
+        optimizer = optim.SGD(pg0, lr=hyp['lr0'], weight_decay=0 , momentum=hyp['momentum'], nesterov=True)
 
     optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
-    optimizer.add_param_group({'params': pg2})  # add pg2 (biases)
+    optimizer.add_param_group({'params': pg2 , 'weight_decay': 0})  # add pg2 (biases)
     logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
+
+    # validate that we considered every parameter
+    # param_dict = {pn: p for pn, p in model.named_parameters()}
+    # inter_params = set(pg1) & set(pg0) & set(pg1)
+    # union_params = set(pg1) | set(pg0) | set(pg1)
+    # assert len(inter_params) == 0, "parameters %s made it into both decay/no_decay sets!" % (str(inter_params),)
+    # assert len(
+    #     param_dict.keys() - union_params) == 0, "parameters %s were not separated into either decay/no_decay set!" \
+    #                                             % (str(param_dict.keys() - union_params),)
+
+
     del pg0, pg1, pg2
 
     # Scheduler https://arxiv.org/pdf/1812.01187.pdf
@@ -195,8 +233,8 @@ def train(hyp, opt, device, tb_writer=None):
         lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # plot_lr_scheduler(optimizer, scheduler, epochs)
-    from utils.plots import plot_lr_scheduler
-    plot_lr_scheduler(optimizer, scheduler, epochs, save_dir='/home/hanoch/projects/tir_od')
+    # from utils.plots import plot_lr_scheduler
+    # plot_lr_scheduler(optimizer, scheduler, epochs, save_dir='/home/hanoch/projects/tir_od')
 
 
     # EMA
@@ -278,7 +316,8 @@ def train(hyp, opt, device, tb_writer=None):
             # Anchors
             if not opt.noautoanchor:
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
-            model.half().float()  # pre-reduce anchor precision TODO HK Why ?
+            if 1:
+                model.half().float()  # pre-reduce anchor precision TODO HK Why ? >???!!!!
 
     # DDP mode
     if cuda and rank != -1:
@@ -412,7 +451,7 @@ def train(hyp, opt, device, tb_writer=None):
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
-        print("Lr : ", 10*'+',lr)
+        # print("Lr : ", 10*'+',lr)
         scheduler.step()
         if 1:  #@@ HK
             plots = True
@@ -574,10 +613,13 @@ if __name__ == '__main__':
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
-    parser.add_argument('--tir-od', action='store_true', help='TIR Object Detection')
     parser.add_argument('--norm-type', type=str, default='standardization',
-                        choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std', 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
+                        choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
+                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
                         help='Normalization approach')
+
+    parser.add_argument('--drc-per-ch-percentile', action='store_true', help='drc_per_ch_percentile')
+
     parser.add_argument('--input-channels', type=int, default=3, help='')
 
     opt = parser.parse_args()
@@ -731,8 +773,21 @@ Anchors,
 Sampler : torch_weighted : WeightedRandomSampler
 PP-YOLO bumps the batch size up from 64 to 192. Of course, this is hard to implement if you have GPU memory constraints.
 
+
+******  DONT FORGET to delete cache files upon changing data  ************
+
 python train.py --workers 8 --device 'cpu' --batch-size 32 --data data/coco.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --hyp data/hyp.scratch.p5.yaml
 --workers 8 --device cpu --batch-size 32 --data data/tir_od.yaml --img 640 640 --cfg cfg/training/yolov7.yaml --weights 'v7' --name yolov7 --cache-images --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1
 --workers 8 --device cpu --batch-size 32 --data data/tir_od.yaml --img 640 640 --cfg cfg/training/yolov7-tiny.yaml --weights 'v7' --name yolov7 --cache-images --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --multi-scale
 --multi-scale training with resized image resolution not good for TIR
+TRaining based on given model w/o prototype yaml by the --cfg
+
+--workers 8 --device 0 --batch-size 16 --data data/coco_2_tir.yaml --img 640 640 --weights ./yolov7/yolov7.pt --name yolov7 --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 3 --linear-lr --noautoanchor
+
+--workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --name yolov7 --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 3 --linear-lr --noautoanchor
+
+===========================================================================
+FT : you need the --cfg of arch yaml because nc-classes are changing 
+--workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --cfg cfg/training/yolov7-tiny.yaml --name yolov7 --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 3 --linear-lr
+
 """

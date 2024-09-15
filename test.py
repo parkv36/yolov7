@@ -14,7 +14,7 @@ from utils.datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
     box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
 from utils.metrics import ap_per_class, ConfusionMatrix
-from utils.plots import plot_images, output_to_target, plot_study_txt
+from utils.plots import plot_images, output_to_target, plot_study_txt, append_to_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
 
 
@@ -88,7 +88,7 @@ def test(data,
         if device.type != 'cpu':
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
+        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=False, # was True
                                        prefix=colorstr(f'{task}: '))[0]
 
     if v5_metric:
@@ -113,9 +113,9 @@ def test(data,
         with torch.no_grad():
             # Run model
             t = time_synchronized()
-            out, train_out = model(img, augment=augment)  # inference(4 coordination, obj conf, cls conf ) and training outputs(un normalized coordination in yolo format and 3 scales diferent outputs) (2,2,80,80,7), (2,2,40,40,7)  : 640/8=40
+            out, train_out = model(img, augment=augment)  # inference(4 coordination, obj conf, cls conf ) and training outputs(batch_size, anchor per scale, x,y dim of scale out 40x40 ,n_classes-conf+1-objectness+4-bbox ) over 3 scales diferent outputs (2,2,80,80,7), (2,2,40,40,7)  : 640/8=40
             t0 += time_synchronized() - t
-
+            # out coco 80 classes : [1, 25200, 85] [batch, proposals_3_scales,4_box__coord+1_obj_score + n x classes]
             # Compute loss
             if compute_loss:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
@@ -124,11 +124,11 @@ def test(data,
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
-            out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+            out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True) # Does thresholding for class  : list of detections, on (n,6) tensor per image [xyxy, conf, cls]
             t1 += time_synchronized() - t
 
         # Statistics per image
-        for si, pred in enumerate(out):
+        for si, pred in enumerate(out): # [bbox_coors, objectness_logit, class]
             labels = targets[targets[:, 0] == si, 1:]
             nl = len(labels)
             tcls = labels[:, 0].tolist() if nl else []  # target class
@@ -141,7 +141,7 @@ def test(data,
                 continue
 
             # Predictions
-            predn = pred.clone() # *xyxy, conf, cls in predn  [x y ,w ,h, conf, cls]
+            predn = pred.clone() # *xyxy, conf, cls in predn  [x y ,w ,h, conf, cls] taking top 300 after NMS
             scale_coords(img[si].shape[1:], predn[:, :4], shapes[si][0], shapes[si][1])  # native-space pred
 
             # Append to text file
@@ -210,7 +210,7 @@ def test(data,
                                 if len(detected) == nl:  # all targets already located in image
                                     break
 
-            # Append statistics (correct, conf, pcls, tcls)
+            # Append statistics (correct, conf_objectness, pcls, tcls)
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images
@@ -234,10 +234,14 @@ def test(data,
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 4  # print format
     print(pf % ('all', seen, nt.sum(), mp, mr, map50, map))
 
+    file_path = os.path.join(save_dir, 'class_stats.txt') #'Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95'
+    append_to_txt(file_path, 'all', seen, nt.sum(), mp, mr, map50, map)
+
     # Print results per class
     if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+            append_to_txt(file_path, names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i])
 
     # Print speeds
     t = tuple(x / seen * 1E3 for x in (t0, t1, t0 + t1)) + (imgsz, imgsz, batch_size)  # tuple
@@ -288,7 +292,6 @@ def test(data,
         maps[c] = ap[i]
     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
     parser.add_argument('--weights', nargs='+', type=str, default='yolov7.pt', help='model.pt path(s)')
@@ -296,7 +299,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch-size', type=int, default=32, help='size of each image batch')
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.65, help='IOU threshold for NMS')
+    parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
     parser.add_argument('--task', default='val', help='train, val, test, speed or study')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--single-cls', action='store_true', help='treat as single-class dataset')
@@ -311,6 +314,12 @@ if __name__ == '__main__':
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--norm-type', type=str, default='standardization',
+                        choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
+                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
+                        help='Normalization approach')
+    parser.add_argument('--input-channels', type=int, default=3, help='')
+
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
@@ -353,3 +362,7 @@ if __name__ == '__main__':
             np.savetxt(f, y, fmt='%10.4g')  # save
         os.system('zip -r study.zip study_*.txt')
         plot_study_txt(x=x)  # plot
+"""
+
+--weights ./yolov7/yolov7.pt --device 0 --batch-size 16 --data data/coco_2_tir.yaml --img-size 640 --conf 0.25 --verbose --save-txt --save-hybrid --norm-type single_image_percentile_0_1
+"""
