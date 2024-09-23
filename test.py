@@ -88,7 +88,12 @@ def test(data,
         if device.type != 'cpu':
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
-        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=False, # was True
+        hyp = dict()
+        hyp['person_size_small_medium_th'] = 32 * 32
+        hyp['car_size_small_medium_th'] = 44 * 44
+        hyp['img_percentile_removal'] = 0.3
+        hyp['beta'] = 0.3
+        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, hyp, pad=0.5, rect=False, #rect was True  # HK@@@ TODO : why pad =0.5?? only effective in rect=True in test time ? https://github.com/ultralytics/ultralytics/issues/13271
                                        prefix=colorstr(f'{task}: '))[0]
 
     if v5_metric:
@@ -102,6 +107,7 @@ def test(data,
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
+    stats_person_small, stats_person_medium = [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()
@@ -210,8 +216,15 @@ def test(data,
                                 if len(detected) == nl:  # all targets already located in image
                                     break
 
-            # Append statistics (correct, conf_objectness, pcls, tcls)
+            # Append statistics (correct, conf_objectness, pcls, tcls) Predicted class is ML among all classes logit and threshol goes over the objectness only
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+            if not training:
+                # assert len(pred[:, :4]) == 1
+                x, y, w, h = xyxy2xywh(pred[:, :4])[0]
+                if w * h < hyp['person_size_small_medium_th']:
+                    stats_person_small.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                else:
+                    stats_person_medium.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images
         if plots and batch_i < 10 or 1:
@@ -224,8 +237,14 @@ def test(data,
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
     if len(stats) and stats[0].any():
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
+        if not training:
+            p_med, r_med, ap_med, f1_med, ap_class_med = ap_per_class(*stats_person_medium, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
+            ap50_med, ap_med = ap_med[:, 0], ap_med.mean(1)  # AP@0.5, AP@0.5:0.95
+            mp_med, mr_med, map50_med, map_med = p_med.mean(), r_med.mean(), ap50_med.mean(), ap_med.mean()
+
         ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
         mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
+
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
     else:
         nt = torch.zeros(1)
@@ -238,7 +257,7 @@ def test(data,
     append_to_txt(file_path, 'all', seen, nt.sum(), mp, mr, map50, map)
 
     # Print results per class
-    if (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
+    if 1 or (verbose or (nc < 50 and not training)) and nc > 1 and len(stats):
         for i, c in enumerate(ap_class):
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
             append_to_txt(file_path, names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i])
@@ -318,9 +337,21 @@ if __name__ == '__main__':
                         choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
                                  'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
                         help='Normalization approach')
+
+    parser.add_argument('--no-tir-signal', action='store_true', help='')
+
+    parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
+
     parser.add_argument('--input-channels', type=int, default=3, help='')
 
     opt = parser.parse_args()
+
+    if opt.tir_channel_expansion: # operates over 3 channels
+        opt.input_channels = 3
+
+    if opt.tir_channel_expansion and opt.norm_type != 'single_image_percentile_0_1': # operates over 3 channels
+        print('Not a good combination')
+
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
     print(opt)
@@ -364,5 +395,10 @@ if __name__ == '__main__':
         plot_study_txt(x=x)  # plot
 """
 
---weights ./yolov7/yolov7.pt --device 0 --batch-size 16 --data data/coco_2_tir.yaml --img-size 640 --conf 0.25 --verbose --save-txt --save-hybrid --norm-type single_image_percentile_0_1
+--weights ./yolov7/yolov7.pt --device 0 --batch-size 16 --data data/coco_2_tir.yaml --img-size 640 --conf 0.6 --verbose --save-txt --save-hybrid --norm-type single_image_percentile_0_1
+test based on RGB coco model
+--weights ./yolov7/yolov7.pt --device 0 --batch-size 64 --data data/coco_2_tir.yaml --img-size 640 --conf 0.25 --verbose --save-txt --norm-type single_image_percentile_0_1 --project test --task train
+
+--weights ./yolov7/yolov7.pt --device 0 --batch-size 64 --data data/tir_od.yaml --img-size 640 --conf 0.25 --verbose --save-txt --norm-type single_image_percentile_0_1 --project test --task val
+
 """

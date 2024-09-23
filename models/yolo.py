@@ -20,7 +20,7 @@ except ImportError:
     thop = None
 
 
-class Detect(nn.Module):
+class Detect(nn.Module): # classifier head
     stride = None  # strides computed during build
     export = False  # onnx export
     end2end = False

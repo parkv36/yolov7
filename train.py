@@ -37,6 +37,22 @@ from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
 
+from clearml import Task, Logger
+"""
+api {
+    web_server:https://app.railvision.hosted.allegro.ai/
+    api_server:https://api.railvision.hosted.allegro.ai
+    files_server:https://files.railvision.hosted.allegro.ai
+    credentials {
+    "access_key"="Q8ICCH7QKGVW433QT2OYE28HCVJZ10"
+    "secret_key"="A5u8JB-sgmF7Sdgs8H61i3GXPihF1WSO8Pxn44PnKhBNxfJ8eb1wZQ8J-RGB2Z7zAQk"
+    }
+}
+"""
+task = Task.init(
+        project_name="TIR_OD",
+        task_name="train yolov7 with augmented data"
+    )
 def compare_models_basic(model1, model2):
     for ix, (p1, p2) in enumerate(zip(model1.parameters(), model2.parameters())):
         if p1.data.ne(p2.data).sum() > 0:
@@ -350,7 +366,10 @@ def train(hyp, opt, device, tb_writer=None):
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
                 f'Starting training for {epochs} epochs...')
-    torch.save(model, wdir / 'init.pt')
+
+    if (not opt.nosave):
+        torch.save(model, wdir / 'init.pt')
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -617,12 +636,19 @@ if __name__ == '__main__':
                         choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
                                  'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
                         help='Normalization approach')
+    parser.add_argument('--no-tir-signal', action='store_true', help='')
 
-    parser.add_argument('--drc-per-ch-percentile', action='store_true', help='drc_per_ch_percentile')
+    parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
 
     parser.add_argument('--input-channels', type=int, default=3, help='')
 
     opt = parser.parse_args()
+
+    if opt.tir_channel_expansion: # operates over 3 channels
+        opt.input_channels = 3
+
+    if opt.tir_channel_expansion and opt.norm_type != 'single_image_percentile_0_1': # operates over 3 channels
+        print('Not a good combination')
 
     # Set DDP variables
     opt.world_size = int(os.environ['WORLD_SIZE']) if 'WORLD_SIZE' in os.environ else 1
@@ -789,5 +815,8 @@ TRaining based on given model w/o prototype yaml by the --cfg
 ===========================================================================
 FT : you need the --cfg of arch yaml because nc-classes are changing 
 --workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --cfg cfg/training/yolov7-tiny.yaml --name yolov7 --hyp data/hyp.tir_od.tiny.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 3 --linear-lr
+
+
+--workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --cfg cfg/training/yolov7-tiny.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug.yaml --adam --norm-type single_image_mean_std --input-channels 3 --linear-lr --epochs 2
 
 """

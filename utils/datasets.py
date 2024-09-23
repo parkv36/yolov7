@@ -125,7 +125,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       scaling_type=opt.norm_type,
                                       input_channels=opt.input_channels,
                                       num_cls=num_cls,
-                                      drc_per_ch_percentile=opt.drc_per_ch_percentile)
+                                      tir_channel_expansion=opt.tir_channel_expansion,
+                                      no_tir_signal=opt.no_tir_signal)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -439,7 +440,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
                  scaling_type='standardization', input_channels=3,
-                 num_cls=-1, drc_per_ch_percentile=False):
+                 num_cls=-1, tir_channel_expansion=False, no_tir_signal=False):
 
         self.img_size = img_size
         self.augment = augment
@@ -454,7 +455,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.percentile = hyp['img_percentile_removal']
         self.beta = hyp['beta']
         self.input_channels = input_channels# in case GL image but NN is RGB hence replicate
-        self.drc_per_ch_percentile = drc_per_ch_percentile
+        self.tir_channel_expansion = tir_channel_expansion
+        self.is_tir_signal = not (no_tir_signal)
 
         #self.albumentations = Albumentations() if augment else None
 
@@ -541,7 +543,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 elif mini > 1:
                     shapes[i] = [1, 1 / mini]
 
-            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride
+            self.batch_shapes = np.ceil(np.array(shapes) * img_size / stride + pad).astype(int) * stride  #pad=0.5 https://github.com/ultralytics/ultralytics/issues/13271 : @123456dad the padding of 0.5 in the BaseDataset class, which results in resizing an image from 640x640 to 672x672, is primarily for maintaining aspect ratio and providing a buffer to apply various augmentations without losing important features at the edges. This padding can affect model performance, as seen in your observation where the .pt model shows a slightly higher mAP compared to the ONNX model.
 
         # Cache images into memory for faster training (WARNING: large datasets may exceed system RAM)
         self.imgs = [None] * n
@@ -653,7 +655,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 else:
                     img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1))
                 r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
-                img = (img * r + img2 * (1 - r)).astype(np.uint8)
+                img = (img * r + img2 * (1 - r)).astype(img.dtype)#.astype(np.uint8)
                 labels = np.concatenate((labels, labels2), 0)
 
         else:
@@ -728,21 +730,34 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         labels_out = torch.zeros((nL, 6))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
-        if self.drc_per_ch_percentile:
-            raise # Not imp
-            img = np.repeat(img[np.newaxis, :, :], 3, axis=0)  # convert GL to RGB by replication
-            for chan, drc_percentile in enumerate(hyp['drc_per_ch_percentile']):
-                img_chan = scaling_image(img[chan, :, :], scaling_type=self.scaling_type,
-                                    percentile=drc_percentile, beta=self.beta)
-                img[chan, :, :] = img_chan
 
+        if self.tir_channel_expansion:
+            img = np.repeat(img[np.newaxis, :, :], 3, axis=0)  # convert GL to RGB by replication
+            img_ce = np.zeros_like(img).astype('float64')
+
+            # CH1 hist equalization
+            img_chan = scaling_image(img[0, :, :], scaling_type=self.scaling_type,
+                                percentile=0, beta=self.beta)
+            img_ce[0, :, :] = img_chan.astype('float64')
+
+            img_chan = scaling_image(img[1, :, :], scaling_type=self.scaling_type,
+                                percentile=self.percentile, beta=self.beta)
+
+            img_ce[1, :, :] = img_chan.astype('float64')
+
+            img_chan = inversion_aug(img_ce[1, :, :]) # invert the DRC one
+            img_ce[2, :, :] = img_chan.astype('float64')
+            img = img_ce
+        #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_ce.tiff'), 255*img.transpose(1,2,0).astype('uint8'))
         else:
-            if img.ndim > 2: # GL no permute
+            if self.is_tir_signal:
+                img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
+            else:
                 # Convert
                 img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-            else:
-                # img = img[np.newaxis,...] # unsqueeze
-                img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
+            # else:
+            #     # img = img[np.newaxis,...] # unsqueeze
+            #     img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
 
             # print('\n image file', self.img_files[index])
             if 0:
@@ -807,6 +822,7 @@ def load_image(self, index):
         #16bit unsigned
         if os.path.basename(path).split('.')[-1] == 'tiff':
             img = cv2.imread(path, -1)
+            img = img[:, :, np.newaxis] # (640,640, 1)
         else:
             img = cv2.imread(path)  # BGR
         assert img is not None, 'Image Not Found ' + path
@@ -837,6 +853,9 @@ def inversion_aug(img):
     if img.dtype == np.uint16 or img.dtype == np.int8:
         img = np.iinfo(img.dtype).max - img
         return img
+    elif img.dtype == np.float32 or img.dtype == np.float64:
+        img = 1.0 - img
+        return img
     else:
         raise ValueError("image type is not supported (int8, UINT16) {}".format(img.dtype))
 
@@ -862,10 +881,17 @@ def load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-
+        # if 1:
+        #     img = np.repeat(img[:, :, np.newaxis], 3, axis=2)
+        # if img.ndim <3 : #TIR =>unsqueeze ro RGB 1-channel
+        #     tir_signal = True
+        #     img = img[:, :, np.newaxis] #np.repeat(img[:, :, np.newaxis], 3, axis=2) #img[:, :, np.newaxis]
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            if self.is_tir_signal:
+                img4 = np.full((s * 2, s * 2, img.shape[2]), 0, dtype=np.uint16)  # base image with 4 tiles
+            else:
+                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -920,10 +946,17 @@ def load_mosaic9(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
+        # if img.ndim <3 : #TIR =>unsqueeze ro RGB 1-channel
+        #     tir_signal = True
+        #     img = img[:, :, np.newaxis] #np.repeat(img[:, :, np.newaxis], 3, axis=2) #img[:, :, np.newaxis]
 
         # place img in img9
         if i == 0:  # center
-            img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            if self.is_tir_signal:
+                img9 = np.full((s * 3, s * 3, img.shape[2]), 0, dtype=np.uint16)  # base image with 4 tiles
+            else:
+                img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+
             h0, w0 = h, w
             c = s, s, s + w, s + h  # xmin, ymin, xmax, ymax (base) coordinates
         elif i == 1:  # top
