@@ -175,7 +175,7 @@ class ConfusionMatrix:
                        xticklabels=names + ['background FP'] if labels else "auto",
                        yticklabels=names + ['background FN'] if labels else "auto").set_facecolor((1, 1, 1))
             fig.axes[0].set_xlabel('True')
-            fig.axes[0].set_ylabel('Predicted')
+            fig.axes[0].set_ylabel('Predicted @ th={}'.format(self.conf))
             fig.savefig(Path(save_dir) / 'confusion_matrix.png', dpi=250)
         except Exception as e:
             pass

@@ -20,9 +20,22 @@ from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-
+import re
 import test  # import test.py to get mAP after each epoch
-from models.experimental import attempt_load
+
+try:
+#    from yolov7_main.models.common import Conv, DWConv
+ #   from yolov7_main.utils.google_utils import attempt_download
+    from models.experimental import attempt_load
+
+except:
+    print("", 100 * '==')
+    print(os.getcwd())
+    import sys
+    sys.path.append('/home/hanoch/projects/tir_od')
+    from tir_od.yolov7.models.experimental import attempt_load
+#
+
 from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
@@ -38,21 +51,35 @@ from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 logger = logging.getLogger(__name__)
 
 from clearml import Task, Logger
-"""
-api {
-    web_server:https://app.railvision.hosted.allegro.ai/
-    api_server:https://api.railvision.hosted.allegro.ai
-    files_server:https://files.railvision.hosted.allegro.ai
-    credentials {
-    "access_key"="Q8ICCH7QKGVW433QT2OYE28HCVJZ10"
-    "secret_key"="A5u8JB-sgmF7Sdgs8H61i3GXPihF1WSO8Pxn44PnKhBNxfJ8eb1wZQ8J-RGB2Z7zAQk"
-    }
-}
-"""
 task = Task.init(
         project_name="TIR_OD",
-        task_name="train yolov7 with augmented data"
+        task_name="train yolov7 with dummy test"
     )
+
+gradient_clip_value = 100.0
+def find_clipped_gradient_within_layer(model, gradient_clip_value):
+    margin_from_sum_abs = 1 / 3
+    # find if excess gradient value w/o clipping using the clipping API with clip=INF=100 :just check total norm with dummy high clip val
+    total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 100)
+    if total_grad_norm > gradient_clip_value:
+        max_grad_temp = -100.0
+        name_grad_temp = 'None'
+
+        for name, param in model.named_parameters():
+            # not_none_grad = [p is not None for p in param.grad]
+            if param.grad is not None:
+                # print(param.grad)
+                norm_layer = torch.unsqueeze(torch.norm(param.grad.detach(), float(2)), 0)
+                not_none_grad = [i for i in norm_layer if i is not None]
+                for u in not_none_grad:
+                    if (u>gradient_clip_value*margin_from_sum_abs).any():
+                        # print(name, u[u > gradient_clip_value/2])
+                        if (u[u > gradient_clip_value*margin_from_sum_abs] > max_grad_temp):
+                            max_grad_temp = u[u > gradient_clip_value *margin_from_sum_abs]
+                            name_grad_temp = name
+
+        print("layer {} with max gradient {}".format(name_grad_temp, max_grad_temp))
+
 def compare_models_basic(model1, model2):
     for ix, (p1, p2) in enumerate(zip(model1.parameters(), model2.parameters())):
         if p1.data.ne(p2.data).sum() > 0:
@@ -94,7 +121,7 @@ def train(hyp, opt, device, tb_writer=None):
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.dump(vars(opt), f, sort_keys=False)
 
-
+    is_torch_240 = int(re.search(r'([\d.]+)', torch.__version__).group(1).replace('.', '')) >=240
 
     # Configure
     plots = not opt.evolve  # create plots
@@ -332,7 +359,7 @@ def train(hyp, opt, device, tb_writer=None):
             # Anchors
             if not opt.noautoanchor:
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
-            if 1:
+            if opt.amp or 1:
                 model.half().float()  # pre-reduce anchor precision TODO HK Why ? >???!!!!
 
     # DDP mode
@@ -354,12 +381,19 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Start training
     t0 = time.time()
-    nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
+    if hyp['warmup_epochs'] !=0: # otherwise it is forced to 1000 iterations
+        nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
+    else:
+        nw = 0
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
-    scaler = amp.GradScaler(enabled=cuda)
+    if 1:
+        scaler = amp.GradScaler(enabled=cuda)
+    else:
+        scaler = torch.amp.GradScaler("cuda", enabled=opt.amp) if is_torch_240 else torch.cuda.amp.GradScaler(enabled=opt.amp)
+
     compute_loss_ota = ComputeLossOTA(model)  # init loss class
     compute_loss = ComputeLoss(model)  # init loss class
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
@@ -369,6 +403,14 @@ def train(hyp, opt, device, tb_writer=None):
 
     if (not opt.nosave):
         torch.save(model, wdir / 'init.pt')
+    # from pympler import tracker
+    # the_tracker = tracker.SummaryTracker()
+    # the_tracker.print_diff()
+    # OP
+    # the_tracker.print_diff()
+
+    if 1: # HK TODO remove later
+        torch.autograd.set_detect_anomaly(True)
 
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
@@ -399,6 +441,7 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             # imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0  @@HK TODO is that standartization ?
@@ -423,8 +466,8 @@ def train(hyp, opt, device, tb_writer=None):
                     ns = [math.ceil(x * sf / gs) * gs for x in imgs.shape[2:]]  # new shape (stretched to gs-multiple)
                     imgs = F.interpolate(imgs, size=ns, mode='bilinear', align_corners=False)
 
-            # Forward
             with amp.autocast(enabled=cuda):
+            # with amp.autocast(enabled=(cuda and opt.amp)):
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
@@ -435,8 +478,19 @@ def train(hyp, opt, device, tb_writer=None):
                 if opt.quad:
                     loss *= 4.
 
+
+            # HK TODO : https://discuss.pytorch.org/t/switching-between-mixed-precision-training-and-full-precision-training-after-training-is-started/132366/4    remove scaler backwards
             # Backward
             scaler.scale(loss).backward()
+            # gradient clipping find and clip
+
+            # find_clipped_gradient_within_layer(model, gradient_clip_value)
+            if ni > nw and rank in [-1, 0]:
+                total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                                 gradient_clip_value)  # dont worry the clipping occurs if |sum(grad)|^2>1000 => no clipping just monitoring
+                tb_writer.add_scalar('Grad norm', total_grad_norm, ni)
+                # if total_grad_norm > gradient_clip_value:
+                #     print("Gradeint {} was clipped to {}".format(total_grad_norm, gradient_clip_value))
 
             # Optimize
             if ni % accumulate == 0:
@@ -484,8 +538,9 @@ def train(hyp, opt, device, tb_writer=None):
                 results, maps, times = test.test(data_dict,
                                                  batch_size=batch_size * 2,
                                                  imgsz=imgsz_test,
-                                                 save_json=True,
+                                                 save_json=opt.save_json,
                                                  model=ema.ema,
+                                                 iou_thres=hyp['iou_t'],
                                                  single_cls=opt.single_cls,
                                                  dataloader=testloader,
                                                  save_dir=save_dir,
@@ -524,7 +579,7 @@ def train(hyp, opt, device, tb_writer=None):
                 ckpt = {'epoch': epoch,
                         'best_fitness': best_fitness,
                         'training_results': results_file.read_text(),
-                        'model': deepcopy(model.module if is_parallel(model) else model).half(),
+                        'model': deepcopy(model.module if is_parallel(model) else model).half(),  # HK TODO hlaf() is only if AMP is True
                         'ema': deepcopy(ema.ema).half(),
                         'updates': ema.updates,
                         'optimizer': optimizer.state_dict(),
@@ -576,7 +631,7 @@ def train(hyp, opt, device, tb_writer=None):
                                           is_coco=is_coco,
                                           v5_metric=opt.v5_metric)
 
-        # Strip optimizers
+        # Strip optimerizs
         final = best if best.exists() else last  # final model
         for f in last, best:
             if f.exists():
@@ -606,6 +661,7 @@ if __name__ == '__main__':
     parser.add_argument('--rect', action='store_true', help='rectangular training')
     parser.add_argument('--resume', nargs='?', const=True, default=False, help='resume most recent training')
     parser.add_argument('--nosave', action='store_true', help='only save final checkpoint')
+    parser.add_argument('--save-json', action='store_true', help=' save save-json')
     parser.add_argument('--notest', action='store_true', help='only test final epoch')
     parser.add_argument('--noautoanchor', action='store_true', help='disable autoanchor check')
     parser.add_argument('--evolve', action='store_true', help='evolve hyperparameters')
@@ -633,14 +689,22 @@ if __name__ == '__main__':
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     parser.add_argument('--norm-type', type=str, default='standardization',
-                        choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
-                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
-                        help='Normalization approach')
+                                        choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
+                                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
+                                        help='Normalization approach')
     parser.add_argument('--no-tir-signal', action='store_true', help='')
 
     parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
 
     parser.add_argument('--input-channels', type=int, default=3, help='')
+
+    parser.add_argument('--save-path', default='/mnt/Data/hanoch', help='save to project/name')
+
+    parser.add_argument('--gamma-aug-prob', type=float, default=0.1, help='')
+
+    parser.add_argument('--amp', action='store_true', help='Remove torch AMP')
+
+
 
     opt = parser.parse_args()
 
@@ -674,7 +738,11 @@ if __name__ == '__main__':
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
         opt.name = 'evolve' if opt.evolve else opt.name
+        # if opt.save_path == '':
         opt.save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve)  # increment run
+        # else:
+        #     opt.save_dir = os.path.join(opt.save_path,
+        #                  increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve))
 
     # DDP mode
     opt.total_batch_size = opt.batch_size
