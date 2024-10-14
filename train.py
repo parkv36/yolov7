@@ -56,6 +56,7 @@ task = Task.init(
         task_name="train yolov7 with dummy test"
     )
 
+task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3")
 gradient_clip_value = 100.0
 def find_clipped_gradient_within_layer(model, gradient_clip_value):
     margin_from_sum_abs = 1 / 3

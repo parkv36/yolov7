@@ -2,12 +2,15 @@ import os
 import pandas as pd
 from argparse import ArgumentParser
 import yaml
+import warnings
+warnings.warn = lambda *args,**kwargs: None
 
 def process_class_stats(file_path):
     columns = ['class_name', 'num_files', 'num_objects', 'precision', 'recall', 'map50', 'map']
 
     # Read the text file into a pandas DataFrame
     # df = pd.read_csv(file_path, delim_whitespace=True)
+    warnings.simplefilter# / warnings.catch_warnings
     df = pd.read_csv(file_path, delim_whitespace=True, names=columns, header=None)
 
     # Find the index where the last repetition of 'all' starts

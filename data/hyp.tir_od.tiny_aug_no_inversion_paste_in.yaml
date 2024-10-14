@@ -30,7 +30,8 @@ copy_paste: 0.0  # image copy paste (probability)
 paste_in: 0.3  # image copy paste (probability), use 0 for faster training : cutout
 loss_ota: 0 #1 # use ComputeLossOTA, use 0 for faster training
 inversion: 0 #opposite temperature
-tir_channel_expansion: 0.3 #[0, 0.2, 0.5]
 img_percentile_removal: 0.3
 beta : 0.3
 random_perspective : 0
+gamma : 80   # percent
+gamma_liklihood: 0.25

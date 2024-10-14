@@ -2,7 +2,7 @@ lr0: 0.005 #0.001  # initial learning rate (SGD=1E-2, Adam=1E-3)
 lrf: 0.01  # final OneCycleLR learning rate (lr0 * lrf)
 momentum: 0.937  # SGD momentum/Adam beta1
 weight_decay: 0.005  # optimizer weight decay 5e-4  It resolve mAP of overfitting test
-warmup_epochs: 3.0  # warmup epochs (fractions ok)
+warmup_epochs: 0.0  # warmup epochs (fractions ok)
 warmup_momentum: 0.8  # warmup initial momentum
 warmup_bias_lr: 0.001 #0.001  # warmup initial bias lr
 box: 0.05  # box loss gain
@@ -10,7 +10,7 @@ cls: 0.5  # cls loss gain
 cls_pw: 1.0  # cls BCELoss positive_weight
 obj: 1.0  # obj loss gain (scale with pixels)
 obj_pw: 1.0  # obj BCELoss positive_weight
-iou_t: 0.20  # IoU training threshold
+iou_t: 0.60  # like the default in the code was 0.2 IoU training threshold
 anchor_t: 4.0  # anchor-multiple threshold
 anchors: 2  # anchors per output layer (0 to ignore)  @@HK was 3
 fl_gamma: 1.5 #1.5  # focal loss gamma (efficientDet default gamma=1.5)
@@ -34,4 +34,3 @@ img_percentile_removal: 0.3
 beta : 0.3
 random_perspective : 0
 gamma : 80   # percent
-gamma_liklihood: 0.0
