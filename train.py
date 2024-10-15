@@ -128,8 +128,14 @@ def train(hyp, opt, device, tb_writer=None):
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
     init_seeds(2 + rank)
-    with open(opt.data) as f:
-        data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+
+    if 1:
+        config_file = task.connect_configuration(opt.data)
+        with open(config_file) as f:
+            data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+    else:
+        with open(opt.data) as f:
+            data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
     is_coco = opt.data.endswith('coco.yaml')
 
     with open(save_dir / 'data.yaml', 'w') as f:
@@ -410,7 +416,7 @@ def train(hyp, opt, device, tb_writer=None):
     # OP
     # the_tracker.print_diff()
 
-    if 1: # HK TODO remove later
+    if 1: # HK TODO remove later  The anomaly mode tells you about the nan. If you remove this and you have the nan error again, you should have an additional stack trace that tells you about the forward function (make sure to enable the anomaly mode before the you run the forward).
         torch.autograd.set_detect_anomaly(True)
 
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
