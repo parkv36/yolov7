@@ -133,6 +133,7 @@ def train(hyp, opt, device, tb_writer=None):
         config_file = task.connect_configuration(opt.data)
         with open(config_file) as f:
             data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+        data_dict = task.connect_configuration(data_dict)
     else:
         with open(opt.data) as f:
             data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
