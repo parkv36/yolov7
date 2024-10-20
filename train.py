@@ -49,7 +49,7 @@ from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_di
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
-
+clear_ml = True
 from clearml import Task, Logger
 task = Task.init(
         project_name="TIR_OD",
@@ -133,7 +133,7 @@ def train(hyp, opt, device, tb_writer=None):
     cuda = device.type != 'cpu'
     init_seeds(2 + rank)
 
-    if 1:
+    if clear_ml: #clearml support
         config_file = task.connect_configuration(opt.data)
         with open(config_file) as f:
             data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
@@ -775,9 +775,15 @@ if __name__ == '__main__':
         assert opt.batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
         opt.batch_size = opt.total_batch_size // opt.world_size
 
-    # Hyperparameters
-    with open(opt.hyp) as f:
-        hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
+    # clearml support
+    if clear_ml: #clearml support
+        config_file = task.connect_configuration(opt.hyp)
+        with open(config_file) as f:
+            hyp = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+    else:
+        # Hyperparameters
+        with open(opt.hyp) as f:
+            hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
 
     # Train
     logger.info(opt)
