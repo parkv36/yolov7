@@ -776,7 +776,7 @@ if __name__ == '__main__':
 
     # clearml support
     if clear_ml: #clearml support
-        config_file = task.connect_configuration(opt.hyp)
+        config_file = task.connect_configuration(opt.hyp, name='hyperparameters_cfg')
         with open(config_file) as f:
             hyp = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
         print("", 100 * '==')
