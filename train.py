@@ -56,7 +56,7 @@ task = Task.init(
         task_name="train yolov7 with dummy test"
     )
 
-task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3")
+task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
 gradient_clip_value = 100.0
 opt_gradient_clipping = True
 
@@ -779,6 +779,8 @@ if __name__ == '__main__':
         config_file = task.connect_configuration(opt.hyp)
         with open(config_file) as f:
             hyp = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+        print("", 100 * '==')
+        print('Hyperparameters:', hyp)
     else:
         # Hyperparameters
         with open(opt.hyp) as f:
