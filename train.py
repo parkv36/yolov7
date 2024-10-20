@@ -58,6 +58,10 @@ task = Task.init(
 
 task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3")
 gradient_clip_value = 100.0
+opt_gradient_clipping = True
+
+def callback_fun_det_anomaly():
+    pass
 def find_clipped_gradient_within_layer(model, gradient_clip_value):
     margin_from_sum_abs = 1 / 3
     # find if excess gradient value w/o clipping using the clipping API with clip=INF=100 :just check total norm with dummy high clip val
@@ -133,7 +137,7 @@ def train(hyp, opt, device, tb_writer=None):
         config_file = task.connect_configuration(opt.data)
         with open(config_file) as f:
             data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
-
+        # data_dict = task.connect_configuration(data_dict)
     else:
         with open(opt.data) as f:
             data_dict = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
@@ -417,8 +421,8 @@ def train(hyp, opt, device, tb_writer=None):
     # OP
     # the_tracker.print_diff()
 
-    if 1: # HK TODO remove later  The anomaly mode tells you about the nan. If you remove this and you have the nan error again, you should have an additional stack trace that tells you about the forward function (make sure to enable the anomaly mode before the you run the forward).
-        torch.autograd.set_detect_anomaly(True)
+    if 0: # HK TODO remove later  The anomaly mode tells you about the nan. If you remove this and you have the nan error again, you should have an additional stack trace that tells you about the forward function (make sure to enable the anomaly mode before the you run the forward).
+        torch.autograd.set_detect_anomaly(True, callback=callback_fun_det_anomaly)
 
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
@@ -491,14 +495,22 @@ def train(hyp, opt, device, tb_writer=None):
             # Backward
             scaler.scale(loss).backward()
             # gradient clipping find and clip
+            if opt_gradient_clipping:
+                if 1: # args.ams
+                    # find_clipped_gradient_within_layer(model, gradient_clip_value)
+                    if ni > nw and rank in [-1, 0]:
+                        if ni % accumulate == 0: # same condition as for the scaler.update() to synch
+                            scaler.unscale_(optimizer)
+                            total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                                             gradient_clip_value)  # dont worry the clipping occurs if |sum(grad)|^2>1000 => no clipping just monitoring
+                            tb_writer.add_scalar('Grad norm', total_grad_norm, ni)
+                            # if total_grad_norm > gradient_clip_value:
+                            #     print("Gradeint {} was clipped to {}".format(total_grad_norm, gradient_clip_value))
+                else:
+                    total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                                     gradient_clip_value)  # dont worry the clipping occurs if |sum(grad)|^2>1000 => no clipping just monitoring
 
-            # find_clipped_gradient_within_layer(model, gradient_clip_value)
-            if ni > nw and rank in [-1, 0]:
-                total_grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(),
-                                                                 gradient_clip_value)  # dont worry the clipping occurs if |sum(grad)|^2>1000 => no clipping just monitoring
-                tb_writer.add_scalar('Grad norm', total_grad_norm, ni)
-                # if total_grad_norm > gradient_clip_value:
-                #     print("Gradeint {} was clipped to {}".format(total_grad_norm, gradient_clip_value))
+                    tb_writer.add_scalar('Grad norm', total_grad_norm, ni)
 
             # Optimize
             if ni % accumulate == 0:
@@ -895,4 +907,23 @@ FT : you need the --cfg of arch yaml because nc-classes are changing
 
 --workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --cfg cfg/training/yolov7-tiny.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug.yaml --adam --norm-type single_image_mean_std --input-channels 3 --linear-lr --epochs 2
 
+
+class EMA_Clip(EMA):
+    #Exponential moving average
+    def _init_(self, mu, avg_factor=5):
+        super()._init_(mu=mu)
+        self.avg_factor = avg_factor
+
+    def forward(self, x, last_average):
+        if self.flag_first_time_passed==False:
+            new_average = x
+            self.flag_first_time_passed = True
+        else:
+            
+            if x < self.avg_factor * last_average:
+                new_average = self.mu * x + (1 - self.mu) * last_average
+            else:
+                new_average = self.mu * self.avg_factor * last_average + (1 - self.mu) * last_average
+                
+        return new_average
 """
