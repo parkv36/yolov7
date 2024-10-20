@@ -718,7 +718,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--input-channels', type=int, default=3, help='')
 
-    parser.add_argument('--save-path', default='/mnt/Data/hanoch', help='save to project/name')
+    parser.add_argument('--save-path', default='', help='save to project/name')
 
     parser.add_argument('--gamma-aug-prob', type=float, default=0.1, help='')
 
@@ -758,13 +758,12 @@ if __name__ == '__main__':
         assert len(opt.cfg) or len(opt.weights), 'either --cfg or --weights must be specified'
         opt.img_size.extend([opt.img_size[-1]] * (2 - len(opt.img_size)))  # extend to 2 sizes (train, test)
         opt.name = 'evolve' if opt.evolve else opt.name
-        # if opt.save_path == '':
-        opt.save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve)  # increment run
-        # else:
-        #     opt.save_dir = os.path.join(opt.save_path,
-        #                  increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve))
+        if opt.save_path == '':
+            opt.save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok | opt.evolve)  # increment run
+        else:
+            opt.save_dir = increment_path(os.path.join(opt.save_path, Path(opt.project) , opt.name), exist_ok=opt.exist_ok | opt.evolve)
 
-    # DDP mode
+            # DDP mode
     opt.total_batch_size = opt.batch_size
     device = select_device(opt.device, batch_size=opt.batch_size)
     if opt.local_rank != -1:
