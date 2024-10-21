@@ -66,6 +66,9 @@ def exif_size(img):
         pass
 
     return s
+
+# import warnings
+# warnings.filterwarnings('error', category=RuntimeWarning)
 def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
     if scaling_type == 'standardization': # default by repo
         img = img/ 255.0
@@ -73,7 +76,7 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
     elif scaling_type =="single_image_0_to_1":
         max_val = np.max(img.ravel())
         min_val = np.min(img.ravel())
-        img = np.double(img - min_val) / np.double(max_val - min_val)
+        img = np.double(img - min_val) / (np.double(max_val - min_val)  + np.finfo(np.float32).eps)
         img = np.minimum(np.maximum(img, 0), 1)
 
     elif scaling_type == 'single_image_mean_std':
@@ -82,7 +85,7 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
     elif scaling_type == 'single_image_percentile_0_1':
         min_val = np.percentile(img.ravel(), percentile)
         max_val = np.percentile(img.ravel(), 100-percentile)
-        img = np.double(img - min_val) / np.double(max_val - min_val)
+        img = np.double(img - min_val) / (np.double(max_val - min_val) + np.finfo(np.float32).eps)
         img = np.minimum(np.maximum(img, 0), 1)
 
     elif scaling_type == 'single_image_percentile_0_255':
@@ -92,7 +95,7 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
         # img = np.uint8(np.minimum(np.maximum(img, 0), 1)*255)
         ImgMin = np.percentile(img, percentile)
         ImgMax = np.percentile(img, 100-percentile)
-        ImgDRC = (np.double(img - ImgMin) / np.double(ImgMax - ImgMin)) * 255
+        ImgDRC = (np.double(img - ImgMin) / (np.double(ImgMax - ImgMin)) * 255 + np.finfo(np.float32).eps)
         img_temp = (np.uint8(np.minimum(np.maximum(ImgDRC, 0), 255)))
         # img_temp = img_temp / 255.0
         return img_temp
@@ -114,10 +117,11 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
 def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=False, cache=False, pad=0.0, rect=False,
                       rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='',rel_path_images='', num_cls=-1):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
-    if opt.gamma_aug_prob > 0:
-        hyp['gamma_liklihood'] = opt.gamma_aug_prob
-        print("", 100 * '==')
-        print('gamma_liklihood was overriden by optional value ', opt.gamma_aug_prob)
+    if augment:
+        if opt.gamma_aug_prob > 0:
+            hyp['gamma_liklihood'] = opt.gamma_aug_prob
+            print("", 100 * '==')
+            print('gamma_liklihood was overriden by optional value ', opt.gamma_aug_prob)
 
     with torch_distributed_zero_first(rank):
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
@@ -670,6 +674,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img = (img * r + img2 * (1 - r)).astype(img.dtype)#.astype(np.uint8)
                 labels = np.concatenate((labels, labels2), 0)
 
+            # if np.isnan(img).any():
+            #     print('img is nan mosaic')
+
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
@@ -720,6 +727,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             #img, labels = self.albumentations(img, labels)
             img = self.albumentations_gamma_contrast(img)
 
+            # if np.isnan(img).any():
+            #     print('img is nan gamma')
+
             if hyp['hsv_h'] >0 or hyp['hsv_s'] >0 or hyp['hsv_v'] >0 :
             # Augment colorspace
                 augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
@@ -759,14 +769,6 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 if nL:
                     labels[:, 1] = 1 - labels[:, 1]
 
-            # if random.random() < hyp['gamma_liklihood']:
-            #     # if img.dtype == np.uint16 or img.dtype == np.uint8:
-            #     #     img = img/np.iinfo(img.dtype).max
-            #     # if img.max() > 1.0:
-            #     #     warnings.warn("gamma correction operates over standartized images [0-1]!!!")
-            #
-            #     img = adjust_gamma(img, hyp['gamma'], gain=1)
-
         labels_out = torch.zeros((nL, 6))
         if nL:
             labels_out[:, 1:] = torch.from_numpy(labels)
@@ -798,6 +800,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0] + 'post_'+ str(self.scaling_type)))
 
         # print('\n 1st', img.shape)
+        if np.isnan(img).any():
+            print('img is nan fin')
+
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes

@@ -55,8 +55,8 @@ def test(data,
         if opt.save_path == '':
             save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
         else:
-            save_dir = Path(os.path.join(opt.save_path,
-                         increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)))
+            save_dir = Path(increment_path(os.path.join(opt.save_path, Path(opt.project) , opt.name), exist_ok=opt.exist_ok))
+
         try: # no suduer can fail
             (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
         except Exception as e:
@@ -68,7 +68,7 @@ def test(data,
         imgsz = check_img_size(imgsz, s=gs)  # check img_size
         
         if trace:
-            model = TracedModel(model, device, imgsz)
+            model = TracedModel(model, device, imgsz, opt.input_channels)
 
     #torch.backends.cudnn.benchmark = True  ##uses the inbuilt cudnn auto-tuner to find the fastest convolution algorithms. -
     # Half
@@ -99,14 +99,14 @@ def test(data,
 
     if not training:
         if device.type != 'cpu':
-            model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         hyp['img_percentile_removal'] = 0.3
         hyp['beta'] = 0.3
-        hyp['gamma'] = 80
-        hyp['gamma_liklihood'] = 0.25
-
-        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, hyp, pad=0.5, rect=False, #rect was True  # HK@@@ TODO : why pad =0.5?? only effective in rect=True in test time ? https://github.com/ultralytics/ultralytics/issues/13271
+        hyp['gamma'] = 80 # dummy anyway augmentation is disabled
+        hyp['gamma_liklihood'] = 0.01
+        # augment=False explicit no augmentation to test
+        dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, hyp, pad=0.5, augment=False, rect=False, #rect was True  # HK@@@ TODO : why pad =0.5?? only effective in rect=True in test time ? https://github.com/ultralytics/ultralytics/issues/13271
                                        prefix=colorstr(f'{task}: '), rel_path_images=data['path'], num_cls=data['nc'])[0]
 
     if v5_metric:
@@ -222,7 +222,7 @@ def test(data,
 
                         # Append detections
                         detected_set = set()
-                        for j in (ious > iouv[0]).nonzero(as_tuple=False):
+                        for j in (ious > iouv[0]).nonzero(as_tuple=False): # iouv[0]=0.5 IOU for dectetions iouv in general are all 0.5:0.05:.. for COCO
                             d = ti[i[j]]  # detected target
                             if d.item() not in detected_set:
                                 detected_set.add(d.item())
@@ -232,7 +232,7 @@ def test(data,
                                     break
 
             # Append statistics (correct, conf_objectness, pcls, tcls) Predicted class is Max-Likelihood among all classes logit and threshol goes over the objectness only
-            stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+            stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls)) # correct @ IOU=0.5 of pred box with target
             if not training or 1:
                 # assert len(pred[:, :4]) == 1
                 x, y, w, h = xyxy2xywh(pred[:, :4])[0]
@@ -241,7 +241,7 @@ def test(data,
                 else:
                     stats_person_medium.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
-        # Plot images
+        # Plot images  aa = np.repeat(img[0,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32') cv2.imwrite('test/exp40/test_batch88_labels__.jpg', aa*255)
         if plots and batch_i < 10 or 1:
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
@@ -256,7 +256,7 @@ def test(data,
         stats_person_small = [np.concatenate(x, 0) for x in zip(*stats_person_small)]  # to numpy
 
     if len(stats) and stats[0].any(): # P, R @  # max F1 index
-        p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
+        p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
         if not training or 1:
             if bool(stats_person_medium):
                 p_med, r_med, ap_med, f1_med, ap_class_med = ap_per_class(*stats_person_medium, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
@@ -441,4 +441,8 @@ test based on RGB coco model
 --weights ./yolov7/yolov7.pt --device 0 --batch-size 64 --data data/tir_od.yaml --img-size 640 --conf 0.25 --verbose --save-txt --norm-type single_image_percentile_0_1 --project test --task val
 # Using pretrained model
 --weights /mnt/Data/hanoch/runs/train/yolov7434/weights/epoch_099.pt --device 0 --batch-size 4 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.25 --verbose --norm-type single_image_percentile_0_1 --project test --task test
+#vbased on 7555 mAP=82.3
+--weights /mnt/Data/hanoch/runs/train/yolov7563/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.02 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.4
+
+/home/hanoch/projects/tir_od/runs/train/yolov7563/weights
 """

@@ -58,6 +58,11 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=3):
     # Plots one bounding box on image img
     tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
     color = color or [random.randint(0, 255) for _ in range(3)]
+
+    for y in x[:4]:
+        if np.isnan(y):
+            print('BP here')
+
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
     cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
     if label:
@@ -148,12 +153,12 @@ def plot_images(images, targets, paths=None, fname='images.jpg', input_channels=
         if scale_factor < 1:
             img = cv2.resize(img, (w, h))
 
-        if img.ndim > 2: # GL no permute
+        if img.shape[2] > 1: # GL no permute
             # Convert
             mosaic[block_y:block_y + h, block_x:block_x + w, :] = img
         else:
             # img = img[np.newaxis,...] # unsqueeze
-            mosaic[block_y:block_y + h, block_x:block_x + w, :] = np.repeat(img[np.newaxis, :, :], 3, axis=0).transpose(1, 2, 0)
+            mosaic[block_y:block_y + h, block_x:block_x + w, :] = np.repeat(img, 3, axis=2) # np.repeat(img[np.newaxis, :, :], 3, axis=0).transpose(1, 2, 0)
 
 
         if len(targets) > 0:
