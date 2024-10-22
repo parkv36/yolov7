@@ -801,7 +801,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         # print('\n 1st', img.shape)
         if np.isnan(img).any():
-            print('img is nan fin')
+            print('img {} index : {} is nan fin'.format(self.img_files[index], index))
 
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)

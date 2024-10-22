@@ -50,12 +50,13 @@ from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
 clear_ml = True
+
 from clearml import Task, Logger
 task = Task.init(
         project_name="TIR_OD",
         task_name="train yolov7 with dummy test"
     )
-
+# Task.execute_remotely() will invoke the job immidiately over the remote and not DeV
 task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
 gradient_clip_value = 100.0
 opt_gradient_clipping = True
@@ -421,7 +422,7 @@ def train(hyp, opt, device, tb_writer=None):
     # OP
     # the_tracker.print_diff()
 
-    if 1: # HK TODO remove later  The anomaly mode tells you about the nan. If you remove this and you have the nan error again, you should have an additional stack trace that tells you about the forward function (make sure to enable the anomaly mode before the you run the forward).
+    if 0: # HK TODO remove later  The anomaly mode tells you about the nan. If you remove this and you have the nan error again, you should have an additional stack trace that tells you about the forward function (make sure to enable the anomaly mode before the you run the forward).
         torch.autograd.set_detect_anomaly(True)
 
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
@@ -718,7 +719,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--input-channels', type=int, default=3, help='')
 
-    parser.add_argument('--save-path', default='', help='save to project/name')
+    parser.add_argument('--save-path', default='/mnt/Data/hanoch', help='save to project/name')
 
     parser.add_argument('--gamma-aug-prob', type=float, default=0.1, help='')
 
@@ -727,6 +728,7 @@ if __name__ == '__main__':
 
 
     opt = parser.parse_args()
+    # Only for clearML env
 
     if opt.tir_channel_expansion: # operates over 3 channels
         opt.input_channels = 3
