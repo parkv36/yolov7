@@ -48,17 +48,17 @@ def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False, sa
         if n_p == 0 or n_l == 0:
             continue
         else:
-            # Accumulate FPs and TPs
+            # Accumulate FPs and TPs {HK: since tp computed as the oned that has IOUs>th with GT hence the other predictions are FP by definition}
             fpc = (1 - tp[i]).cumsum(0)
             tpc = tp[i].cumsum(0)
 
             # Recall
             recall = tpc / (n_l + 1e-16)  # recall curve
-            r[ci] = np.interp(-px, -conf[i], recall[:, 0], left=0)  # negative x, xp because xp decreases
-
+            r[ci] = np.interp(-px, -conf[i], recall[:, 0], left=0)  # negative x, xp because xp decreases. interpolate over desired px linearily spaced [0:1] by recall=func(conf). r[ci] are the recall=func(conf=px)
+            # Hence px becomes the new conf linearily spaced axis
             # Precision
             precision = tpc / (tpc + fpc)  # precision curve
-            p[ci] = np.interp(-px, -conf[i], precision[:, 0], left=1)  # p at pr_score
+            p[ci] = np.interp(-px, -conf[i], precision[:, 0], left=1)  # p at pr_score. same interp for precision=func(conf)
 
             # AP from recall-precision curve
             for j in range(tp.shape[1]):
@@ -187,18 +187,37 @@ class ConfusionMatrix:
 
 # Plots ----------------------------------------------------------------------------------------------------------------
 
-def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=()):
+def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_interest=[0.95, 0.9, 0.85]):
+
     # Precision-recall curve
     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
     py = np.stack(py, axis=1)
 
     if 0 < len(names) < 21:  # display per-class legend if < 21 classes
         for i, y in enumerate(py.T):
+            recall_of_interest_per_class = [px[int(np.where(y.reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
             ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f}')  # plot(recall, precision)
+            ax.plot(recall_of_interest_per_class, precisions_of_interest, '*', color='green')
+            for k in range(len(precisions_of_interest)):
+                ax.plot(recall_of_interest_per_class[k], precisions_of_interest[k], '*', color='green')
+                ax.text(x=recall_of_interest_per_class[k], y=precisions_of_interest[k], fontsize=12,
+                        s=f"th={recall_of_interest_per_class[k]:.2f}")
+                # ax.text(x=0.6, y=precisions_of_interest[i], fontsize=12, s=f" R/P {names[i]}[ {recall_of_interest_per_class[i]:.3f}    {precisions_of_interest[i]:.3f}]")
+                # ax.text(x=0.6, y=max(0.9-0.2*i, 0), fontsize=12, s=f" R/P {names[i]}[ {recall_of_interest_per_class[i]:.3f}    {precisions_of_interest[i]:.3f}]")
+                if k == 0:
+                    ax.text(x=min(0.1 + 0.4 * k, 1), y=max(0.5 - 0.2 * i, 0), fontsize=12,
+                            s=f" R@Pr {names[i]}[{recall_of_interest_per_class[k]:.2f};{precisions_of_interest[k]:.2f}]")
+                else:
+                    ax.text(x=min(0.1 + (0.5 - k*0.1) * k, 1), y=max(0.5 - 0.2 * i, 0), fontsize=12,
+                        s=f"[{recall_of_interest_per_class[k]:.2f};{precisions_of_interest[k]:.2f}]")
+
     else:
         ax.plot(px, py, linewidth=1, color='grey')  # plot(recall, precision)
 
-    ax.plot(px, py.mean(1), linewidth=3, color='blue', label='all classes %.3f mAP@0.5' % ap[:, 0].mean())
+    recall_of_interest = [px[int(np.where(py.mean(1).reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
+
+    ax.plot(px, py.mean(1), linewidth=3, color='blue', label='all classes %.3f mAP@0.5' % ap[:, 0].mean()) # py [ap , num_clases]
+    ax.plot(recall_of_interest, precisions_of_interest, '*')
     ax.plot([1, 0], color='navy', linewidth=2, linestyle='--')
     ax.set_xlabel('Recall')
     ax.set_ylabel('Precision')

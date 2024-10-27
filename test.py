@@ -198,7 +198,7 @@ def test(data,
                                   'bbox': [round(x, 3) for x in b],
                                   'score': round(p[4], 5)})
 
-            # Assign all predictions as incorrect
+            # Assign all predictions as incorrect ; pred takes top 300 predictions conf over 10 ious [0.5:0.95:0.05]
             correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
             if nl:
                 detected = []  # target indices
@@ -445,4 +445,7 @@ test based on RGB coco model
 --weights /mnt/Data/hanoch/runs/train/yolov7563/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.02 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.4
 
 /home/hanoch/projects/tir_od/runs/train/yolov7563/weights
+
+
+--weights /mnt/Data/hanoch/runs/train/yolov7575/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
 """

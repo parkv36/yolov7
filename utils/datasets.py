@@ -268,11 +268,12 @@ class LoadImages:  # for inference
         img = letterbox(img0, self.img_size, stride=self.stride)[0]
 
 
-        if img.ndim > 2: # GL no permute
-            # Convert
-            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-        else:
-            img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) # convert GL to RGB by replication
+        if not self.tir_channel_expansion:
+            if self.is_tir_signal:
+                img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
+            else:
+                # Convert
+                img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
 
         # print('\n image file', self.img_files[index])
         if 0:
@@ -790,7 +791,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 plt.figure()
                 plt.hist(img.ravel(), bins=128)
                 plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre_' +str(self.scaling_type)))
-
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_ce_before.tiff'), img.transpose(1,2,0))
             img = scaling_image(img, scaling_type=self.scaling_type,
                                 percentile=self.percentile, beta=self.beta)
             if 0:
@@ -798,7 +799,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 plt.figure()
                 plt.hist(img.ravel(), bins=128)
                 plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0] + 'post_'+ str(self.scaling_type)))
-
+                # aa1 = np.repeat(img[1,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32')
+                # cv2.imwrite('test/exp40/test_batch88_labels__1.jpg', aa1*255)
+                # aa1 = np.repeat(img.transpose(1,2,0), 3, axis=2).astype('float32')
         # print('\n 1st', img.shape)
         if np.isnan(img).any():
             print('img {} index : {} is nan fin'.format(self.img_files[index], index))
@@ -1499,6 +1502,7 @@ def extract_boxes(path='../coco/'):  # from utils.datasets import *; extract_box
     for im_file in tqdm(files, total=n):
         if im_file.suffix[1:] in img_formats:
             # image
+            raise # not aligned to TIR 1 channel signal
             im = cv2.imread(str(im_file))[..., ::-1]  # BGR to RGB
             h, w = im.shape[:2]
 
