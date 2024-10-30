@@ -912,11 +912,6 @@ def load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        # if 1:
-        #     img = np.repeat(img[:, :, np.newaxis], 3, axis=2)
-        # if img.ndim <3 : #TIR =>unsqueeze ro RGB 1-channel
-        #     tir_signal = True
-        #     img = img[:, :, np.newaxis] #np.repeat(img[:, :, np.newaxis], 3, axis=2) #img[:, :, np.newaxis]
         # place img in img4
         if i == 0:  # top left
             if self.is_tir_signal:
@@ -1436,7 +1431,7 @@ class Albumentations_gamma_contrast:
 
         self.transform = A.Compose([
             # A.CLAHE(p=0.01),
-            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=alb_prob),
+            A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=alb_prob), #Contrast adjustment: x' = clip((x - mean) * (1 + a) + mean) ; x'' = clip(x' * (1 + β))
             A.RandomGamma(gamma_limit=gamma_limit, p=alb_prob)])
             # A.Blur(p=0.01),
             # A.MedianBlur(p=0.01),

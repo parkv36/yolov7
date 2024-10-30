@@ -52,12 +52,16 @@ logger = logging.getLogger(__name__)
 clear_ml = True
 
 from clearml import Task, Logger
-task = Task.init(
-        project_name="TIR_OD",
-        task_name="train yolov7 with dummy test"
-    )
-# Task.execute_remotely() will invoke the job immidiately over the remote and not DeV
-task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
+
+if clear_ml:  # clearml support
+
+    task = Task.init(
+            project_name="TIR_OD",
+            task_name="train yolov7 with dummy test"
+        )
+    # Task.execute_remotely() will invoke the job immidiately over the remote and not DeV
+    task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
+
 gradient_clip_value = 100.0
 opt_gradient_clipping = True
 
@@ -121,9 +125,6 @@ def train(hyp, opt, device, tb_writer=None):
     best = wdir / 'best.pt'
     results_file = save_dir / 'results.txt'
 
-    # Save run settings
-    with open(save_dir / 'hyp.yaml', 'w') as f:
-        yaml.dump(hyp, f, sort_keys=False)
     with open(save_dir / 'opt.yaml', 'w') as f:
         yaml.dump(vars(opt), f, sort_keys=False)
 
@@ -132,7 +133,17 @@ def train(hyp, opt, device, tb_writer=None):
     # Configure
     plots = not opt.evolve  # create plots
     cuda = device.type != 'cpu'
-    init_seeds(2 + rank)
+    if opt.predefined_seed:
+        hyp['seed'] = 2 + rank
+        init_seeds(2 + rank)
+    else:
+        rand_seed = int(time.time())
+        hyp['seed'] = rand_seed
+        init_seeds(rand_seed)
+
+    # Save run settings
+    with open(save_dir / 'hyp.yaml', 'w') as f:
+        yaml.dump(hyp, f, sort_keys=False)
 
     if clear_ml: #clearml support
         config_file = task.connect_configuration(opt.data)
@@ -374,7 +385,9 @@ def train(hyp, opt, device, tb_writer=None):
                 check_anchors(dataset, model=model, thr=hyp['anchor_t'], imgsz=imgsz)
             if opt.amp or 1:
                 model.half().float()  # pre-reduce anchor precision TODO HK Why ? >???!!!!
-
+    if 1:
+        print("opt.local_rank", opt.local_rank)
+        print("opt.local_rank", opt.local_rank)
     # DDP mode
     if cuda and rank != -1:
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
@@ -694,7 +707,7 @@ if __name__ == '__main__':
     parser.add_argument('--single-cls', action='store_true', help='train multi-class data as single-class')
     parser.add_argument('--adam', action='store_true', help='use torch.optim.Adam() optimizer')
     parser.add_argument('--sync-bn', action='store_true', help='use SyncBatchNorm, only available in DDP mode')
-    parser.add_argument('--local_rank', type=int, default=-1, help='DDP parameter, do not modify')
+    parser.add_argument('--local-rank', type=int, default=-1, help='DDP parameter, do not modify') #Changed in version 2.0.0: The launcher will passes the --local-rank=<rank> argument to your script. From PyTorch 2.0.0 onwards, the dashed --local-rank is preferred over the previously used underscored --local_rank.
     parser.add_argument('--workers', type=int, default=8, help='maximum number of dataloader workers')
     parser.add_argument('--project', default='runs/train', help='save to project/name')
     parser.add_argument('--entity', default=None, help='W&B entity')
@@ -724,6 +737,9 @@ if __name__ == '__main__':
     parser.add_argument('--gamma-aug-prob', type=float, default=0.1, help='')
 
     parser.add_argument('--amp', action='store_true', help='Remove torch AMP')
+
+    parser.add_argument('--predefined-seed', action='store_true', help='predefined_seed only set it to constant otherwise add args that load the random one ')
+
 
 
 

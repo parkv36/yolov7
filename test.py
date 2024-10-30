@@ -448,4 +448,6 @@ test based on RGB coco model
 
 
 --weights /mnt/Data/hanoch/runs/train/yolov7575/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
+--weights /home/hanoch/projects/tir_od/runs/gpu02/yolov74/weights --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
+
 """
