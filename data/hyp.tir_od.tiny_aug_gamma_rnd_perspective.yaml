@@ -32,5 +32,5 @@ loss_ota: 0 #1 # use ComputeLossOTA, use 0 for faster training
 inversion: 0.5 #opposite temperature
 img_percentile_removal: 0.3
 beta : 0.3
-random_perspective : 0
+random_perspective : 1
 gamma : 80   # percent
