@@ -124,6 +124,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
             print('gamma_liklihood was overriden by optional value ', opt.gamma_aug_prob)
 
     with torch_distributed_zero_first(rank):
+        scaling_before_mosaic = bool(hyp.get('scaling_before_mosaic', False))
+
         dataset = LoadImagesAndLabels(path, imgsz, batch_size,
                                       augment=augment,  # augment images
                                       hyp=hyp,  # augmentation hyperparameters
@@ -139,7 +141,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       input_channels=opt.input_channels,
                                       num_cls=num_cls,
                                       tir_channel_expansion=opt.tir_channel_expansion,
-                                      no_tir_signal=opt.no_tir_signal)
+                                      no_tir_signal=opt.no_tir_signal,
+                                      scaling_before_mosaic=scaling_before_mosaic)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -191,7 +194,8 @@ class _RepeatSampler(object):
 
 class LoadImages:  # for inference
     def __init__(self, path, img_size=640, stride=32,
-                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3):
+                 scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3,
+                 tir_channel_expansion=False, no_tir_signal=False):
 
         p = str(Path(path).absolute())  # os-agnostic absolute path
         if '*' in p:
@@ -224,6 +228,9 @@ class LoadImages:  # for inference
         self.percentile = img_percentile_removal
         self.beta = beta
         self.input_channels = input_channels
+        self.tir_channel_expansion = tir_channel_expansion
+        self.is_tir_signal = not (no_tir_signal)
+
 
     def __iter__(self):
         self.count = 0
@@ -267,6 +274,23 @@ class LoadImages:  # for inference
         # Padded resize
         img = letterbox(img0, self.img_size, stride=self.stride)[0]
 
+        if self.tir_channel_expansion:  # HK @@ according to the paper this CE is a sort of augmentation hence no need to preliminary augment. One of the channels are inversion hence avoid channel inversion aug
+            img = np.repeat(img[np.newaxis, :, :], 3, axis=0)  # convert GL to RGB by replication
+            img_ce = np.zeros_like(img).astype('float64')
+
+            # CH1 hist equalization
+            img_chan = scaling_image(img[0, :, :], scaling_type=self.scaling_type,
+                                     percentile=0, beta=self.beta)
+            img_ce[0, :, :] = img_chan.astype('float64')
+
+            img_chan = scaling_image(img[1, :, :], scaling_type=self.scaling_type,
+                                     percentile=self.percentile, beta=self.beta)
+
+            img_ce[1, :, :] = img_chan.astype('float64')
+
+            img_chan = inversion_aug(img_ce[1, :, :])  # invert the DRC one
+            img_ce[2, :, :] = img_chan.astype('float64')
+            img = img_ce
 
         if not self.tir_channel_expansion:
             if self.is_tir_signal:
@@ -454,8 +478,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
                  scaling_type='standardization', input_channels=3,
-                 num_cls=-1, tir_channel_expansion=False, no_tir_signal=False):
+                 num_cls=-1, tir_channel_expansion=False, no_tir_signal=False, scaling_before_mosaic=False):
 
+        self.scaling_before_mosaic = scaling_before_mosaic
         self.img_size = img_size
         self.augment = augment
         self.hyp = hyp
@@ -655,28 +680,33 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     def __getitem__(self, index):
         index = self.indices[index]  # linear, shuffled, or image_weights
 
+        if self.is_tir_signal:
+            if self.scaling_before_mosaic:
+                filling_value = 0.5  # on borders or after perspective  fill with 0.5 in [0 1] equals to 114 in [0 255]
+            else:
+                filling_value = 0 # on borders or after perspective better to have 0 thermal profile  uint16 based on the DR of the image which is unknown TODO: better find an elegent way
+        else:
+            filling_value = 114
+
         hyp = self.hyp
         mosaic = self.mosaic and random.random() < hyp['mosaic'] and not(self.tir_channel_expansion)
         if mosaic:
             # Load mosaic
             if random.random() < 0.8:
-                img, labels = load_mosaic(self, index)
+                img, labels = load_mosaic(self, index, filling_value=filling_value)
             else:
-                img, labels = load_mosaic9(self, index)
+                img, labels = load_mosaic9(self, index, filling_value=filling_value)
             shapes = None
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
                 if random.random() < 0.8:
-                    img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1))
+                    img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value)
                 else:
-                    img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1))
+                    img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value)
                 r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
                 img = (img * r + img2 * (1 - r)).astype(img.dtype)#.astype(np.uint8)
                 labels = np.concatenate((labels, labels2), 0)
-
-            # if np.isnan(img).any():
-            #     print('img is nan mosaic')
 
         else:
             # Load image
@@ -684,7 +714,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, color=(filling_value, filling_value, filling_value), auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
@@ -718,20 +748,21 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                                                      translate=hyp['translate'],
                                                      scale=hyp['scale'],
                                                      shear=hyp['shear'],
-                                                     perspective=hyp['perspective'])
+                                                     perspective=hyp['perspective'],
+                                                     filling_value=filling_value)
+
             if random.random() < hyp['inversion']:
                 img = inversion_aug(img)
-    #             GL gain/attenuation
-    # Squeeze pdf (x-mu)*scl+mu
 
-            
+            # GL gain/attenuation
+            # Squeeze pdf (x-mu)*scl+mu
             #img, labels = self.albumentations(img, labels)
             img = self.albumentations_gamma_contrast(img)
 
             # if np.isnan(img).any():
             #     print('img is nan gamma')
 
-            if hyp['hsv_h'] >0 or hyp['hsv_s'] >0 or hyp['hsv_v'] >0 :
+            if hyp['hsv_h'] > 0 or hyp['hsv_s'] > 0 or hyp['hsv_v'] > 0:
             # Augment colorspace
                 augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
 
@@ -781,17 +812,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             else:
                 # Convert
                 img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-            # else:
-            #     # img = img[np.newaxis,...] # unsqueeze
-            #     img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
 
-            # print('\n image file', self.img_files[index])
             if 0:
                 import matplotlib.pyplot as plt
                 plt.figure()
                 plt.hist(img.ravel(), bins=128)
                 plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre_' +str(self.scaling_type)))
-            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_ce_before.tiff'), img.transpose(1,2,0))
+
+            # import tifffile
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_before_last_scaling.tiff'), img.transpose(1,2,0))
+
             img = scaling_image(img, scaling_type=self.scaling_type,
                                 percentile=self.percentile, beta=self.beta)
             if 0:
@@ -803,9 +833,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 # cv2.imwrite('test/exp40/test_batch88_labels__1.jpg', aa1*255)
                 # aa1 = np.repeat(img.transpose(1,2,0), 3, axis=2).astype('float32')
         # print('\n 1st', img.shape)
-        if np.isnan(img).any():
-            print('img {} index : {} is nan fin'.format(self.img_files[index], index))
-
+        # if np.isnan(img).any():
+        #     print('img {} index : {} is nan fin'.format(self.img_files[index], index))
+            # raise
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
@@ -902,7 +932,7 @@ def hist_equalize(img, clahe=True, bgr=False):
     return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR if bgr else cv2.COLOR_YUV2RGB)  # convert YUV image to RGB
 
 
-def load_mosaic(self, index):
+def load_mosaic(self, index, filling_value):
     # loads images in a 4-mosaic
 
     labels4, segments4 = [], []
@@ -912,10 +942,17 @@ def load_mosaic(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        # place img in img4
+        if self.scaling_before_mosaic:
+            img = scaling_image(img, scaling_type=self.scaling_type,
+                                percentile=self.percentile, beta=self.beta)
+
+       # place img in img4
         if i == 0:  # top left
             if self.is_tir_signal:
-                img4 = np.full((s * 2, s * 2, img.shape[2]), 0, dtype=np.uint16)  # base image with 4 tiles
+                if self.scaling_before_mosaic:
+                    img4 = np.full((s * 2, s * 2, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles
+                else:
+                    img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
             else:
                 img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
@@ -958,12 +995,13 @@ def load_mosaic(self, index):
                                        scale=self.hyp['scale'],
                                        shear=self.hyp['shear'],
                                        perspective=self.hyp['perspective'],
-                                       border=self.mosaic_border)  # border to remove
+                                       border=self.mosaic_border,
+                                       filling_value=filling_value)  # border to remove
 
     return img4, labels4
 
 
-def load_mosaic9(self, index):
+def load_mosaic9(self, index, filling_value):
     # loads images in a 9-mosaic
 
     labels9, segments9 = [], []
@@ -972,14 +1010,17 @@ def load_mosaic9(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
-        # if img.ndim <3 : #TIR =>unsqueeze ro RGB 1-channel
-        #     tir_signal = True
-        #     img = img[:, :, np.newaxis] #np.repeat(img[:, :, np.newaxis], 3, axis=2) #img[:, :, np.newaxis]
+        if self.scaling_before_mosaic:
+            img = scaling_image(img, scaling_type=self.scaling_type,
+                                percentile=self.percentile, beta=self.beta)
 
         # place img in img9
         if i == 0:  # center
             if self.is_tir_signal:
-                img9 = np.full((s * 3, s * 3, img.shape[2]), 0, dtype=np.uint16)  # base image with 4 tiles
+                if self.scaling_before_mosaic:
+                    img9 = np.full((s * 3, s * 3, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles
+                else:
+                    img9 = np.full((s * 3, s * 3, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles pad with : uint16 based on the DR of the image which is unknown
             else:
                 img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
 
@@ -1035,13 +1076,17 @@ def load_mosaic9(self, index):
     # Augment
     #img9, labels9, segments9 = remove_background(img9, labels9, segments9)
     img9, labels9, segments9 = copy_paste(img9, labels9, segments9, probability=self.hyp['copy_paste'])
+
+    # Perspective transformation can create holes in thermal better fill w/o reflection
+
     img9, labels9 = random_perspective(img9, labels9, segments9,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
                                        scale=self.hyp['scale'],
                                        shear=self.hyp['shear'],
                                        perspective=self.hyp['perspective'],
-                                       border=self.mosaic_border)  # border to remove
+                                       border=self.mosaic_border,
+                                       filling_value=filling_value)  # border to remove
 
     return img9, labels9
 
@@ -1059,7 +1104,14 @@ def load_samples(self, index):
 
         # place img in img4
         if i == 0:  # top left
-            img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
+            if self.is_tir_signal:
+                if self.scaling_before_mosaic:
+                    img4 = np.full((s * 2, s * 2, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles fill with 0.5 in [0 1] equals to 114 in [0 255]
+                else:
+                    img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
+            else:
+                img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles  # base image with 4 tiles
+
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
@@ -1127,6 +1179,7 @@ def remove_background(img, labels, segments):
     h, w, c = img.shape  # height, width, channels
     im_new = np.zeros(img.shape, np.uint8)
     img_new = np.ones(img.shape, np.uint8) * 114
+    raise ValueError('uint8 cast dosnot comply with TIR uint 16')
     for j in range(n):
         cv2.drawContours(im_new, [segments[j].astype(np.int32)], -1, (255, 255, 255), cv2.FILLED)
 
@@ -1221,7 +1274,7 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
 
 
 def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
-                       border=(0, 0)):
+                       border=(0, 0), filling_value=114):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
@@ -1260,9 +1313,9 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if perspective:
-            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
         else:  # affine
-            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(114, 114, 114))
+            img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
 
     # Visualize
     # import matplotlib.pyplot as plt

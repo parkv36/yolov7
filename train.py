@@ -567,6 +567,8 @@ def train(hyp, opt, device, tb_writer=None):
             # mAP
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
+
+
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
                 results, maps, times = test.test(data_dict,
@@ -583,7 +585,8 @@ def train(hyp, opt, device, tb_writer=None):
                                                  wandb_logger=wandb_logger,
                                                  compute_loss=compute_loss,
                                                  is_coco=is_coco,
-                                                 v5_metric=opt.v5_metric)
+                                                 v5_metric=opt.v5_metric,
+                                                 hyp=hyp)
 
             # Write
             with open(results_file, 'a') as f:
@@ -803,6 +806,9 @@ if __name__ == '__main__':
         # Hyperparameters
         with open(opt.hyp) as f:
             hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
+    #defaults for backward compatible hyp files whree not set
+    hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
+    hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
 
     # Train
     logger.info(opt)

@@ -40,7 +40,7 @@ def detect(save_img=False):
     imgsz = check_img_size(imgsz, s=stride)  # check img_size
 
     if trace:
-        model = TracedModel(model, device, opt.img_size)
+        model = TracedModel(model, device, opt.img_size, opt.input_channels)
 
     if half:
         model.half()  # to FP16
@@ -58,7 +58,10 @@ def detect(save_img=False):
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride, scaling_type=opt.norm_type)
+        dataset = LoadImages(source, img_size=imgsz, stride=stride,
+                             scaling_type=opt.norm_type, input_channels=opt.input_channels,
+                             no_tir_signal=opt.no_tir_signal,
+                             tir_channel_expansion=opt.tir_channel_expansion)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -66,7 +69,7 @@ def detect(save_img=False):
 
     # Run inference
     if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
 
@@ -207,7 +210,23 @@ if __name__ == '__main__':
                                  'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
                         help='Normalization approach')
 
+    parser.add_argument('--no-tir-signal', action='store_true', help='')
+
+    parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
+
+    parser.add_argument('--input-channels', type=int, default=3, help='')
+
+    parser.add_argument('--save-path', default='', help='save to project/name')
+
+
     opt = parser.parse_args()
+
+    if opt.tir_channel_expansion: # operates over 3 channels
+        opt.input_channels = 3
+
+    if opt.tir_channel_expansion and opt.norm_type != 'single_image_percentile_0_1': # operates over 3 channels
+        print('Not a good combination')
+
     print(opt)
     #check_requirements(exclude=('pycocotools', 'thop'))
 
@@ -226,4 +245,10 @@ python -u ./yolov7/detect.py --weights ./yolov7/yolov7.pt --conf 0.25 --img-size
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_v20_Dec18_Test22C_20181127_223533_FS_210F_0001_5500_ROTEM_left_roi_220_4707.tiff
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_V50_OCT21_Test46A_ML_RD_IL_2021_08_05_14_48_05_FS_210_XGA_630_922_DENIS_right_roi_210_881.tiff
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR135_V80_JUL23_Test55A_SY_RD_US_2023_01_18_07_29_38_FS_50_XGA_0001_3562_Shahar_left_roi_50_1348.tiff
+
+YOLO model
+--weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_od/Snipaste_2024-09-15_09-00-58_tir_135_TIR135_V80_JUL23_Test55A_SY_RD_US_2023_01_18_07_29_38_FS_50_XGA_0001_3562_Shahar_left_roi_50_1348.png
+
+--weights /mnt/Data/hanoch/runs/train/yolov7575/weights/best.pt --conf 0.01 --img-size 640 --input-channels 1 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/tir_tiff_tiff_files/TIR8_V50_Test19G_Jul20_2018-12-06_13-39-17_FS_50F_0114_6368_ROTEM_right_roi_50_345.tiff
+
 """

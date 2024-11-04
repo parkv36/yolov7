@@ -40,8 +40,11 @@ def test(data,
          half_precision=True,
          trace=False,
          is_coco=False,
-         v5_metric=False):
+         v5_metric=False,
+         **kwargs):
     # Initialize/load model and set device
+
+    hyp = kwargs['hyp']
     training = model is not None
     if training:  # called by train.py
         device = next(model.parameters()).device  # get model device
@@ -93,14 +96,15 @@ def test(data,
         log_imgs = min(wandb_logger.log_imgs, 100)
     # Dataloader
 
-    hyp = dict()
-    hyp['person_size_small_medium_th'] = 32 * 32
-    hyp['car_size_small_medium_th'] = 44 * 44
 
     if not training:
         if device.type != 'cpu':
             model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
+        hyp = dict()
+        hyp['person_size_small_medium_th'] = 32 * 32
+        hyp['car_size_small_medium_th'] = 44 * 44
+
         hyp['img_percentile_removal'] = 0.3
         hyp['beta'] = 0.3
         hyp['gamma'] = 80 # dummy anyway augmentation is disabled
@@ -113,14 +117,14 @@ def test(data,
         print("Testing with YOLOv5 AP metric...")
     
     seen = 0
-    confusion_matrix = ConfusionMatrix(nc=nc, conf=0.25) # HK todo: change per conf threshold given by user
+    confusion_matrix = ConfusionMatrix(nc=nc, conf=conf_thres, iou_thres=iou_thres) # HK per conf per iou_thresh
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
     coco91class = coco80_to_coco91_class()
     s = ('%20s' + '%12s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
-    stats_person_small, stats_person_medium = [], []
+    stats_all_large, stats_person_medium = [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()
@@ -144,6 +148,7 @@ def test(data,
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True) # Does thresholding for class  : list of detections, on (n,6) tensor per image [xyxy, conf, cls]
+            # out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=False) # Does thresholding for class  : list of detections, on (n,6) tensor per image [xyxy, conf, cls]
             t1 += time_synchronized() - t
 
         # Statistics per image
@@ -157,7 +162,7 @@ def test(data,
             if len(pred) == 0:
                 if nl:
                     stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))    #niou for COCO 0.5:0.05:1
-                    stats_person_small.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                    stats_all_large.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
                     stats_person_medium.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
                 continue
 
@@ -208,7 +213,7 @@ def test(data,
                 tbox = xywh2xyxy(labels[:, 1:5])
                 scale_coords(img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
                 if plots:
-                        confusion_matrix.process_batch(predn, torch.cat((labels[:, 0:1], tbox), 1))
+                    confusion_matrix.process_batch(predn, torch.cat((labels[:, 0:1], tbox), 1))
 
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
@@ -236,13 +241,14 @@ def test(data,
             if not training or 1:
                 # assert len(pred[:, :4]) == 1
                 x, y, w, h = xyxy2xywh(pred[:, :4])[0]
-                if w * h < hyp['person_size_small_medium_th']:
-                    stats_person_small.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
-                else:
+                if w * h > hyp['person_size_small_medium_th']:
                     stats_person_medium.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                    if w * h > hyp['car_size_small_medium_th']:
+                        stats_all_large.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images  aa = np.repeat(img[0,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32') cv2.imwrite('test/exp40/test_batch88_labels__.jpg', aa*255)
         if plots and batch_i < 10 or 1:
+            # conf_thresh_plot = 0.1
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
@@ -253,7 +259,7 @@ def test(data,
 
     if not training or 1:
         stats_person_medium = [np.concatenate(x, 0) for x in zip(*stats_person_medium)]  # to numpy
-        stats_person_small = [np.concatenate(x, 0) for x in zip(*stats_person_small)]  # to numpy
+        stats_all_large = [np.concatenate(x, 0) for x in zip(*stats_all_large)]  # to numpy
 
     if len(stats) and stats[0].any(): # P, R @  # max F1 index
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
@@ -263,6 +269,11 @@ def test(data,
                 ap50_med, ap_med = ap_med[:, 0], ap_med.mean(1)  # AP@0.5, AP@0.5:0.95
                 mp_med, mr_med, map50_med, map_med = p_med.mean(), r_med.mean(), ap50_med.mean(), ap_med.mean()
                 nt_med = np.bincount(stats_person_medium[3].astype(np.int64), minlength=nc)  # number of targets per class
+            if bool(stats_all_large):
+                p_large, r_large, ap_large, f1_large, ap_class_large = ap_per_class(*stats_all_large, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
+                ap50_large, ap_large = ap_large[:, 0], ap_large.mean(1)  # AP@0.5, AP@0.5:0.95
+                mp_large, mr_large, map50_large, map_large = p_large.mean(), r_large.mean(), ap50_large.mean(), ap_large.mean()
+                nt_large = np.bincount(stats_all_large[3].astype(np.int64), minlength=nc)  # number of targets per class
 
         ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
         mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
@@ -271,6 +282,7 @@ def test(data,
     else:
         nt = torch.zeros(1)
         nt_med = torch.zeros(1)
+        nt_large = torch.zeros(1)
 
     # Print results
     pf = '%20s' + '%12i' * 2 + '%12.3g' * 4  # print format
@@ -279,6 +291,12 @@ def test(data,
         if bool(stats_person_medium):
             try:
                 print(pf % ('all_medium', seen, nt_med.sum(), mp_med, mr_med, map50_med, map_med))
+            except Exception as e:
+                print(e)
+
+        if bool(stats_all_large):
+            try:
+                print(pf % ('all_large', seen, nt_large.sum(), mp_large, mr_large, map50_large, map_large))
             except Exception as e:
                 print(e)
 
@@ -295,6 +313,14 @@ def test(data,
                 for i, c in enumerate(ap_class_med):
                     print(pf % (names[c]+ '_med', seen, nt_med[c], p_med[i], r_med[i], ap50_med[i], ap_med[i]))
                     append_to_txt(file_path, names[c] + '_med', seen, nt_med[c], p_med[i], r_med[i], ap50_med[i], ap_med[i])
+        except Exception as e:
+            print(e)
+
+        try:
+            if bool(stats_all_large):
+                for i, c in enumerate(ap_class_large):
+                    print(pf % (names[c]+ '_large', seen, nt_large[c], p_large[i], r_large[i], ap50_large[i], ap_large[i]))
+                    append_to_txt(file_path, names[c] + '_large', seen, nt_large[c], p_large[i], r_large[i], ap50_large[i], ap_large[i])
         except Exception as e:
             print(e)
 
@@ -395,6 +421,7 @@ if __name__ == '__main__':
     opt.data = check_file(opt.data)  # check file
     print(opt)
     #check_requirements()
+    hyp = dict()
 
     if opt.task in ('train', 'val', 'test'):  # run normally
         test(opt.data,
@@ -411,8 +438,8 @@ if __name__ == '__main__':
              save_hybrid=opt.save_hybrid,
              save_conf=opt.save_conf,
              trace=not opt.no_trace,
-             v5_metric=opt.v5_metric
-             )
+             v5_metric=opt.v5_metric,
+             hyp=hyp)
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:

@@ -59,9 +59,9 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=3):
     tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
     color = color or [random.randint(0, 255) for _ in range(3)]
 
-    for y in x[:4]:
-        if np.isnan(y):
-            print('BP here')
+    # for y in x[:4]:
+    #     if np.isnan(y):
+    #         print('BP here')
 
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
     cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
@@ -180,7 +180,7 @@ def plot_images(images, targets, paths=None, fname='images.jpg', input_channels=
                 cls = int(classes[j])
                 color = colors[cls % len(colors)]
                 cls = names[cls] if names else cls
-                if labels or conf[j] > 0.25:  # 0.25 conf thresh
+                if labels or conf[j] > 0.1:  # 0.25 conf thresh
                     label = '%s' % cls if labels else '%s %.1f' % (cls, conf[j])
                     plot_one_box(box, mosaic, label=label, color=color, line_thickness=tl)
 

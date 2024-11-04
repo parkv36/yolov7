@@ -195,7 +195,11 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
 
     if 0 < len(names) < 21:  # display per-class legend if < 21 classes
         for i, y in enumerate(py.T):
-            recall_of_interest_per_class = [px[int(np.where(y.reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
+
+            recall_of_interest_per_class = np.zeros_like(precisions_of_interest)
+            if np.array(precisions_of_interest).min() > np.array(precisions_of_interest).max():
+                recall_of_interest_per_class = [px[int(np.where(y.reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
+
             ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f}')  # plot(recall, precision)
             ax.plot(recall_of_interest_per_class, precisions_of_interest, '*', color='green')
             for k in range(len(precisions_of_interest)):
@@ -214,7 +218,9 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
     else:
         ax.plot(px, py, linewidth=1, color='grey')  # plot(recall, precision)
 
-    recall_of_interest = [px[int(np.where(py.mean(1).reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
+    recall_of_interest = np.zeros_like(precisions_of_interest)
+    if np.array(precisions_of_interest).min() > np.array(precisions_of_interest).max():
+        recall_of_interest = [px[int(np.where(py.mean(1).reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
 
     ax.plot(px, py.mean(1), linewidth=3, color='blue', label='all classes %.3f mAP@0.5' % ap[:, 0].mean()) # py [ap , num_clases]
     ax.plot(recall_of_interest, precisions_of_interest, '*')
