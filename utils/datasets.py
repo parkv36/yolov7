@@ -118,10 +118,9 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                       rank=-1, world_size=1, workers=8, image_weights=False, quad=False, prefix='',rel_path_images='', num_cls=-1):
     # Make sure only the first process in DDP process the dataset first, and the following others can use the cache
     if augment:
-        if opt.gamma_aug_prob > 0:
-            hyp['gamma_liklihood'] = opt.gamma_aug_prob
-            print("", 100 * '==')
-            print('gamma_liklihood was overriden by optional value ', opt.gamma_aug_prob)
+        hyp['gamma_liklihood'] = opt.gamma_aug_prob
+        print("", 100 * '==')
+        print('gamma_liklihood was overriden by optional value ', opt.gamma_aug_prob)
 
     with torch_distributed_zero_first(rank):
         scaling_before_mosaic = bool(hyp.get('scaling_before_mosaic', False))
@@ -714,7 +713,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
-            img, ratio, pad = letterbox(img, shape, color=(filling_value, filling_value, filling_value), auto=False, scaleup=self.augment)
+            # img, ratio, pad = letterbox(img, shape, color=(img.mean(), img.mean(), img.mean()), auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
@@ -749,7 +749,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                                                      scale=hyp['scale'],
                                                      shear=hyp['shear'],
                                                      perspective=hyp['perspective'],
-                                                     filling_value=filling_value)
+                                                     filling_value=filling_value,
+                                                     is_fill_by_mean_img=self.is_tir_signal)
 
             if random.random() < hyp['inversion']:
                 img = inversion_aug(img)
@@ -836,6 +837,9 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         # if np.isnan(img).any():
         #     print('img {} index : {} is nan fin'.format(self.img_files[index], index))
             # raise
+        # import tifffile
+        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_before_last_scaling' + str(index) + '.tiff'),
+        #                  img.transpose(1, 2, 0))
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
@@ -996,7 +1000,8 @@ def load_mosaic(self, index, filling_value):
                                        shear=self.hyp['shear'],
                                        perspective=self.hyp['perspective'],
                                        border=self.mosaic_border,
-                                       filling_value=filling_value)  # border to remove
+                                       filling_value=filling_value,
+                                       is_fill_by_mean_img=self.is_tir_signal)  # border to remove
 
     return img4, labels4
 
@@ -1086,7 +1091,8 @@ def load_mosaic9(self, index, filling_value):
                                        shear=self.hyp['shear'],
                                        perspective=self.hyp['perspective'],
                                        border=self.mosaic_border,
-                                       filling_value=filling_value)  # border to remove
+                                       filling_value=filling_value,
+                                       is_fill_by_mean_img=self.is_tir_signal)  # border to remove
 
     return img9, labels9
 
@@ -1274,7 +1280,7 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
 
 
 def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
-                       border=(0, 0), filling_value=114):
+                       border=(0, 0), filling_value=114, is_fill_by_mean_img=False):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
@@ -1312,6 +1318,8 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     # Combined rotation matrix
     M = T @ S @ R @ P @ C  # order of operations (right to left) is IMPORTANT
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
+        if is_fill_by_mean_img:
+            filling_value = int(img.mean()+1) # filling value can be only an integer hance when scaling before mosaic signal is [0,1] then in the random perspective the posibilities for filling values are 0 or 1
         if perspective:
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
         else:  # affine

@@ -542,8 +542,15 @@ def train(hyp, opt, device, tb_writer=None):
                     '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
                 pbar.set_description(s)
 
+                # import tifffile
+                # for ix, img in enumerate(imgs):
+                #     print(ix, torch.std(img), torch.quantile(img, 0.5))
+                #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_scl_bef_mosaic' + str(ix)+'.tiff'),
+                #                      img.cpu().numpy().transpose(1, 2, 0))
+                #
+
                 # Plot
-                if plots and ni < 10:
+                if plots and ni < 100:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
                     Thread(target=plot_images, args=(imgs, targets, paths, f, opt.input_channels), daemon=True).start()
                     # if tb_writer:
@@ -938,6 +945,8 @@ FT : you need the --cfg of arch yaml because nc-classes are changing
 
 --workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --cfg cfg/training/yolov7-tiny.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug.yaml --adam --norm-type single_image_mean_std --input-channels 3 --linear-lr --epochs 2
 
+
+--workers 8 --device 0 --batch-size 32 --data data/tir_od.yaml --img 640 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.2 --cache-images
 
 class EMA_Clip(EMA):
     #Exponential moving average

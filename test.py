@@ -241,10 +241,10 @@ def test(data,
             if not training or 1:
                 # assert len(pred[:, :4]) == 1
                 x, y, w, h = xyxy2xywh(pred[:, :4])[0]
-                if w * h > hyp['person_size_small_medium_th']:
+                if w * h > hyp['person_size_small_medium_th'] and  w * h <= hyp['car_size_small_medium_th']:
                     stats_person_medium.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
-                    if w * h > hyp['car_size_small_medium_th']:
-                        stats_all_large.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                if w * h > hyp['car_size_small_medium_th']:
+                    stats_all_large.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images  aa = np.repeat(img[0,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32') cv2.imwrite('test/exp40/test_batch88_labels__.jpg', aa*255)
         if plots and batch_i < 10 or 1:
