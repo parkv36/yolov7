@@ -27,7 +27,7 @@ fliplr: 0.5  # image flip left-right (probability)
 mosaic: 0.5  # image mosaic (probability)
 mixup: 0.0  # image mixup (probability)
 copy_paste: 0.0  # image copy paste (probability)
-paste_in: 0.0  # image copy paste (probability), use 0 for faster training : cutout
+paste_in: 0.1  # image copy paste (probability), use 0 for faster training : cutout
 loss_ota: 0 #1 # use ComputeLossOTA, use 0 for faster training
 inversion: 0.5 #opposite temperature
 img_percentile_removal: 0.3
