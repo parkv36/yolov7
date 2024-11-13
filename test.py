@@ -247,8 +247,8 @@ def test(data,
                     stats_all_large.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
 
         # Plot images  aa = np.repeat(img[0,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32') cv2.imwrite('test/exp40/test_batch88_labels__.jpg', aa*255)
-        if plots and batch_i < 10 or 1:
-            # conf_thresh_plot = 0.1
+        if plots and batch_i > 10 or 1:
+            # conf_thresh_plot = 0.1 # the plot threshold the connfidence
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
             f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
@@ -265,12 +265,12 @@ def test(data,
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
         if not training or 1:
             if bool(stats_person_medium):
-                p_med, r_med, ap_med, f1_med, ap_class_med = ap_per_class(*stats_person_medium, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
+                p_med, r_med, ap_med, f1_med, ap_class_med = ap_per_class(*stats_person_medium, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names, tag='small_objects')
                 ap50_med, ap_med = ap_med[:, 0], ap_med.mean(1)  # AP@0.5, AP@0.5:0.95
                 mp_med, mr_med, map50_med, map_med = p_med.mean(), r_med.mean(), ap50_med.mean(), ap_med.mean()
                 nt_med = np.bincount(stats_person_medium[3].astype(np.int64), minlength=nc)  # number of targets per class
             if bool(stats_all_large):
-                p_large, r_large, ap_large, f1_large, ap_class_large = ap_per_class(*stats_all_large, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names)
+                p_large, r_large, ap_large, f1_large, ap_class_large = ap_per_class(*stats_all_large, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names, tag='large_objects')
                 ap50_large, ap_large = ap_large[:, 0], ap_large.mean(1)  # AP@0.5, AP@0.5:0.95
                 mp_large, mr_large, map50_large, map_large = p_large.mean(), r_large.mean(), ap50_large.mean(), ap_large.mean()
                 nt_large = np.bincount(stats_all_large[3].astype(np.int64), minlength=nc)  # number of targets per class
