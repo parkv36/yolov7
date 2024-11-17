@@ -495,6 +495,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.input_channels = input_channels# in case GL image but NN is RGB hence replicate
         self.tir_channel_expansion = tir_channel_expansion
         self.is_tir_signal = not (no_tir_signal)
+        self.random_pad = True
 
         #self.albumentations = Albumentations() if augment else None
         self.albumentations_gamma_contrast = Albumentations_gamma_contrast(alb_prob=hyp['gamma_liklihood'],
@@ -956,7 +957,10 @@ def load_mosaic(self, index, filling_value):
                 if self.scaling_before_mosaic:
                     img4 = np.full((s * 2, s * 2, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles
                 else:
-                    img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
+                    if self.random_pad:
+                        img4 = np.random.normal(img.mean(), 500, (s * 2, s * 2, img.shape[2])).astype('uint16')
+                    else:
+                        img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
             else:
                 img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
@@ -1025,7 +1029,10 @@ def load_mosaic9(self, index, filling_value):
                 if self.scaling_before_mosaic:
                     img9 = np.full((s * 3, s * 3, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles
                 else:
-                    img9 = np.full((s * 3, s * 3, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles pad with : uint16 based on the DR of the image which is unknown
+                    if self.random_pad:
+                        img9 = np.random.normal(img.mean(), 500, (s * 3, s * 3, img.shape[2])).astype('uint16')
+                    else:
+                        img9 = np.full((s * 3, s * 3, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles pad with : uint16 based on the DR of the image which is unknown
             else:
                 img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
 
@@ -1114,7 +1121,10 @@ def load_samples(self, index):
                 if self.scaling_before_mosaic:
                     img4 = np.full((s * 2, s * 2, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles fill with 0.5 in [0 1] equals to 114 in [0 255]
                 else:
-                    img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
+                    if self.random_pad:
+                        img4 = np.random.normal(img.mean(), 500, (s * 2, s * 2, img.shape[2])).astype('uint16')
+                    else:
+                        img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
             else:
                 img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles  # base image with 4 tiles
 
@@ -1301,7 +1311,7 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     R = np.eye(3)
     a = random.uniform(-degrees, degrees)
     # a += random.choice([-180, -90, 0, 90])  # add 90deg rotations to small rotations
-    s = random.uniform(1 - scale, 1.1 + scale)
+    s = random.uniform(1 - scale, 1.1 + scale) #@@HK TODO why not symetric
     # s = 2 ** random.uniform(-scale, scale)
     R[:2] = cv2.getRotationMatrix2D(angle=a, center=(0, 0), scale=s)
 
