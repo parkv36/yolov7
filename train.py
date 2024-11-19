@@ -359,6 +359,11 @@ def train(hyp, opt, device, tb_writer=None):
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
 
+
+    with open(save_dir / 'trainig_set.txt', 'w') as f:
+        for file in dataset.img_files:
+            f.write(f"{file}\n")
+
     # Process 0
     if rank in [-1, 0]:
         testloader , test_dataset = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
@@ -369,6 +374,10 @@ def train(hyp, opt, device, tb_writer=None):
 
         mlc = np.concatenate(test_dataset.labels, 0)[:, 0].max()  # max label class
         assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (        mlc, nc, opt.data, nc - 1)
+
+        with open(save_dir / 'test_set.txt', 'w') as f:
+            for file in test_dataset.img_files:
+                f.write(f"{file}\n")
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
