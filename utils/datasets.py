@@ -20,10 +20,10 @@ import torch.nn.functional as F
 from PIL import Image, ExifTags
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from scipy.stats import truncnorm
 # from torchvision.transforms.functional import adjust_gamma
 from skimage.exposure import adjust_gamma
 import albumentations as A
-
 import pickle
 from copy import deepcopy
 #from pycocotools import mask as maskUtils
@@ -35,6 +35,8 @@ from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, 
 from utils.torch_utils import torch_distributed_zero_first
 # @@HK :  pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 resolve h\lib\fbgemm.dll" or one of its dependencies on Windows
 # Parameters
+eps = 1e-5
+
 def flatten(lst): return [x for l in lst for x in l]
 
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
@@ -76,7 +78,7 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
     elif scaling_type =="single_image_0_to_1":
         max_val = np.max(img.ravel())
         min_val = np.min(img.ravel())
-        img = np.double(img - min_val) / (np.double(max_val - min_val)  + np.finfo(np.float32).eps)
+        img = np.double(img - min_val) / (np.double(max_val - min_val)  + eps)
         img = np.minimum(np.maximum(img, 0), 1)
 
     elif scaling_type == 'single_image_mean_std':
@@ -85,7 +87,7 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
     elif scaling_type == 'single_image_percentile_0_1':
         min_val = np.percentile(img.ravel(), percentile)
         max_val = np.percentile(img.ravel(), 100-percentile)
-        img = np.double(img - min_val) / (np.double(max_val - min_val) + np.finfo(np.float32).eps)
+        img = np.double(img - min_val) / (np.double(max_val - min_val) + eps)
         img = np.minimum(np.maximum(img, 0), 1)
 
     elif scaling_type == 'single_image_percentile_0_255':
@@ -95,7 +97,7 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
         # img = np.uint8(np.minimum(np.maximum(img, 0), 1)*255)
         ImgMin = np.percentile(img, percentile)
         ImgMax = np.percentile(img, 100-percentile)
-        ImgDRC = (np.double(img - ImgMin) / (np.double(ImgMax - ImgMin)) * 255 + np.finfo(np.float32).eps)
+        ImgDRC = (np.double(img - ImgMin) / (np.double(ImgMax - ImgMin)) * 255 + eps)
         img_temp = (np.uint8(np.minimum(np.maximum(ImgDRC, 0), 255)))
         # img_temp = img_temp / 255.0
         return img_temp
@@ -495,7 +497,10 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.input_channels = input_channels# in case GL image but NN is RGB hence replicate
         self.tir_channel_expansion = tir_channel_expansion
         self.is_tir_signal = not (no_tir_signal)
-        self.random_pad = True
+        self.random_pad = hyp['random_pad']
+
+        if self.hyp['copy_paste'] >0 and self.random_pad:
+            raise ValueError('copy_paste and random_pad are mutually exclusive. not supported yet!!')
 
         #self.albumentations = Albumentations() if augment else None
         self.albumentations_gamma_contrast = Albumentations_gamma_contrast(alb_prob=hyp['gamma_liklihood'],
@@ -751,18 +756,32 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                                                      shear=hyp['shear'],
                                                      perspective=hyp['perspective'],
                                                      filling_value=filling_value,
-                                                     is_fill_by_mean_img=self.is_tir_signal)
+                                                     is_fill_by_mean_img=self.is_tir_signal,
+                                                     random_pad=self.random_pad)
+                    if np.isnan(img).any():
+                        print('img is nan gamma')
 
             if random.random() < hyp['inversion']:
                 img = inversion_aug(img)
 
+            if np.isnan(img).any():
+                print('img is nan gamma')
+            # print("std===",img.std(), img.mean())
             # GL gain/attenuation
             # Squeeze pdf (x-mu)*scl+mu
             #img, labels = self.albumentations(img, labels)
             img = self.albumentations_gamma_contrast(img)
 
-            # if np.isnan(img).any():
-            #     print('img is nan gamma')
+            if random.random() < hyp['gamma_liklihood']:
+                if img.dtype == np.uint16 or img.dtype == np.uint8:
+                    img = img/np.iinfo(img.dtype).max
+                if img.max() > 1.0:
+                    warnings.warn("gamma correction operates over standartized images [0-1]!!!")
+                gamma = np.random.uniform(hyp['gamma'], 200-hyp['gamma']) / 100.0
+                img = adjust_gamma(img, gamma, gain=1)
+
+            if np.isnan(img).any():
+                print('img is nan gamma')
 
             if hyp['hsv_h'] > 0 or hyp['hsv_s'] > 0 or hyp['hsv_v'] > 0:
             # Augment colorspace
@@ -835,12 +854,13 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 # cv2.imwrite('test/exp40/test_batch88_labels__1.jpg', aa1*255)
                 # aa1 = np.repeat(img.transpose(1,2,0), 3, axis=2).astype('float32')
         # print('\n 1st', img.shape)
-        # if np.isnan(img).any():
-        #     print('img {} index : {} is nan fin'.format(self.img_files[index], index))
+        if np.isnan(img).any():
+            print('img {} index : {} is nan fin'.format(self.img_files[index], index))
             # raise
         # import tifffile
-        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_before_last_scaling' + str(index) + '.tiff'),
+        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
         #                  img.transpose(1, 2, 0))
+        #
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
@@ -950,17 +970,14 @@ def load_mosaic(self, index, filling_value):
         if self.scaling_before_mosaic:
             img = scaling_image(img, scaling_type=self.scaling_type,
                                 percentile=self.percentile, beta=self.beta)
+        # import tifffile
+        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+        #                               'img_projective_' + str(self.img_files[index].split('/')[-1].split('.tiff')[0]) +'.tiff'), img)
 
-       # place img in img4
+        # place img in img4
         if i == 0:  # top left
             if self.is_tir_signal:
-                if self.scaling_before_mosaic:
-                    img4 = np.full((s * 2, s * 2, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles
-                else:
-                    if self.random_pad:
-                        img4 = np.random.normal(img.mean(), 500, (s * 2, s * 2, img.shape[2])).astype('uint16')
-                    else:
-                        img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
+                img4 = init_image_plane(self, img, s, n_div=2)
             else:
                 img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
@@ -1005,7 +1022,23 @@ def load_mosaic(self, index, filling_value):
                                        perspective=self.hyp['perspective'],
                                        border=self.mosaic_border,
                                        filling_value=filling_value,
-                                       is_fill_by_mean_img=self.is_tir_signal)  # border to remove
+                                       is_fill_by_mean_img=self.is_tir_signal,
+                                       random_pad=self.random_pad)# mosaic has its own random padding hence no need to support inside perspective (scaling)
+                                         # border to remove
+
+    # import tifffile
+    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+    #                               'img_projective_' + str(self.img_files[indices[0]].split('/')[-1].split('.tiff')[0]) +'.tiff'), img)
+    #
+    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+    #                               'img_projective_' + str(
+    #                                   self.img_files[indices[1]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
+    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+    #                               'img_projective_' + str(
+    #                                   self.img_files[indices[2]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
+    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+    #                               'img_projective_' + str(
+    #                                   self.img_files[indices[3]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
 
     return img4, labels4
 
@@ -1026,13 +1059,7 @@ def load_mosaic9(self, index, filling_value):
         # place img in img9
         if i == 0:  # center
             if self.is_tir_signal:
-                if self.scaling_before_mosaic:
-                    img9 = np.full((s * 3, s * 3, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles
-                else:
-                    if self.random_pad:
-                        img9 = np.random.normal(img.mean(), 500, (s * 3, s * 3, img.shape[2])).astype('uint16')
-                    else:
-                        img9 = np.full((s * 3, s * 3, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles pad with : uint16 based on the DR of the image which is unknown
+                img9 = init_image_plane(self, img, s, n_div=3)
             else:
                 img9 = np.full((s * 3, s * 3, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles
 
@@ -1099,7 +1126,8 @@ def load_mosaic9(self, index, filling_value):
                                        perspective=self.hyp['perspective'],
                                        border=self.mosaic_border,
                                        filling_value=filling_value,
-                                       is_fill_by_mean_img=self.is_tir_signal)  # border to remove
+                                       is_fill_by_mean_img=self.is_tir_signal,
+                                       random_pad=self.random_pad)
 
     return img9, labels9
 
@@ -1118,13 +1146,7 @@ def load_samples(self, index):
         # place img in img4
         if i == 0:  # top left
             if self.is_tir_signal:
-                if self.scaling_before_mosaic:
-                    img4 = np.full((s * 2, s * 2, img.shape[2]), 0.5, dtype=np.float32)  # base image with 4 tiles fill with 0.5 in [0 1] equals to 114 in [0 255]
-                else:
-                    if self.random_pad:
-                        img4 = np.random.normal(img.mean(), 500, (s * 2, s * 2, img.shape[2])).astype('uint16')
-                    else:
-                        img4 = np.full((s * 2, s * 2, img.shape[2]), img.mean(), dtype=np.uint16)  # base image with 4 tiles
+                img4 = init_image_plane(self, img, s, n_div=2)
             else:
                 img4 = np.full((s * 2, s * 2, img.shape[2]), 114, dtype=np.uint8)  # base image with 4 tiles  # base image with 4 tiles
 
@@ -1163,6 +1185,46 @@ def load_samples(self, index):
     sample_labels, sample_images, sample_masks = sample_segments(img4, labels4, segments4, probability=0.5)
 
     return sample_labels, sample_images, sample_masks
+
+def init_random_image_plane(img, s, n_div=1):
+    if img.dtype == np.uint16:
+        std_ = 500
+        lower = 0
+        upper = 2 ** 16 - 1
+        filling_value = img.mean()
+        # img4 = np.random.normal(img.mean(), std_, (s * 2, s * 2, img.shape[2])).astype(img.dtype) # Random can goes beyond UINT16 and would be wrapped arround which is also random so OK
+    elif img.dtype == np.uint8:
+        std_ = 15
+        filling_value = 114
+        lower = 0
+        upper = 255
+        # img4 = truncnorm.rvs((lower - filling_value) / std_, (upper - filling_value) / std_, loc=filling_value,
+        #               scale=std_, size=(s * 2, s * 2)).astype(img.dtype) # bounded random number
+    else:
+        std_ = 0.05
+        filling_value = 0.5
+        lower = 0
+        upper = 1
+        # img4 = truncnorm.rvs((0 - filling_value) / std_, (1 - filling_value) / std_, loc=filling_value,
+        #               scale=std_, size=(s * 2, s * 2)).astype(img.dtype) # bounded random number
+        # img4 = np.random.normal(img.mean(), std_, (s * 2, s * 2, img.shape[2]))
+
+    if len(img.shape) == 3:
+        siz = s * n_div, s * n_div, img.shape[2]
+    else:
+        siz = s * n_div, s * n_div
+    img4 = truncnorm.rvs((lower - filling_value) / std_, (upper - filling_value) / std_,
+                         loc=img.mean(), scale=std_, size=(siz)).astype(img.dtype)  # bounded random number
+
+    return img4
+
+def init_image_plane(self, img, s, n_div=2):
+    if self.random_pad:
+        img4 = init_random_image_plane(img=img, s=s, n_div=n_div)
+    else:
+        img4 = np.full((s * n_div, s * n_div, img.shape[2]), img.mean(),
+                       dtype=img.dtype)  # base image with 4 tiles fill with 0.5 in [0 1] equals to 114 in [0 255]
+    return img4
 
 
 def copy_paste(img, labels, segments, probability=0.5):
@@ -1290,7 +1352,8 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
 
 
 def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, scale=.1, shear=10, perspective=0.0,
-                       border=(0, 0), filling_value=114, is_fill_by_mean_img=False):
+                       border=(0, 0), filling_value=114, is_fill_by_mean_img=False,
+                       random_pad=False):
     # torchvision.transforms.RandomAffine(degrees=(-10, 10), translate=(.1, .1), scale=(.9, 1.1), shear=(-10, 10))
     # targets = [cls, xyxy]
 
@@ -1334,6 +1397,33 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
         else:  # affine
             img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
+
+        if random_pad:
+
+            pad_w = int((width - np.round(width * s)) // 2)
+            pad_h = int((height - np.round(height * s)) // 2)
+            img_plane = init_random_image_plane(img, s=img.shape[0], n_div=1)
+
+            if pad_w + int(T[0, 2] - width/2) >0:
+                # Left padding
+                # img[:, :pad_w + max(0,int(T[0, 2] - width/2))] = img_plane[:, :pad_w + max(0,int(T[0, 2] - width/2))]
+                img[:, :pad_w + int(T[0, 2] - width / 2)] = img_plane[:, :pad_w + int(T[0, 2] - width / 2)]
+            # padding form left can be done even if trans goes right handed beyonf the resolution over the canvas 1280
+            img[:, width - pad_w + int(T[0, 2] - width/2):] = img_plane[:, width - pad_w + int(T[0, 2] - width/2):]
+
+            if pad_h + int(T[1, 2] - height / 2) > 0:
+                img[:pad_h + int(T[1, 2] - height/2), :] = img_plane[:pad_h + int(T[1, 2] - height/2), :]
+
+            # img[height-pad_h + max(0,int(T[1, 2] - height/2)):, :] = img_plane[height-pad_h + max(0,int(T[1, 2] - height/2)):, :]
+            img[height-pad_h + int(T[1, 2] - height/2):, :] = img_plane[height-pad_h + int(T[1, 2] - height/2):, :]
+
+            # print(pad_w + int(T[0, 2] - width/2), width - pad_w + int(T[0, 2] - width/2), pad_h + int(T[1, 2] - height/2), height-pad_h + int(T[1, 2] - height/2) ,str(T[0, 2]) + '_'+ str(s))
+
+        # import tifffile
+        # pad_w = int((width - np.round(width * s)) // 2)
+        # pad_h = int((height - np.round(height * s)) // 2)
+        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_projective_' + str(s) + '_' +  str(T[0, 2]) + '_' + str(pad_w) + '_' + str(T[1, 2]) + '_' + str(pad_h) +'.tiff'),
+        #                  img[:,:,np.newaxis])
 
     # Visualize
     # import matplotlib.pyplot as plt
@@ -1503,7 +1593,7 @@ class Albumentations_gamma_contrast:
         self.transform = A.Compose([
             # A.CLAHE(p=0.01),
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=alb_prob), #Contrast adjustment: x' = clip((x - mean) * (1 + a) + mean) ; x'' = clip(x' * (1 + β))
-            A.RandomGamma(gamma_limit=gamma_limit, p=alb_prob)])
+            ])# A.RandomGamma(gamma_limit=gamma_limit, p=alb_prob)])
             # A.Blur(p=0.01),
             # A.MedianBlur(p=0.01),
             # A.ToGray(p=0.01),

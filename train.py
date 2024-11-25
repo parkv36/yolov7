@@ -825,6 +825,8 @@ if __name__ == '__main__':
     #defaults for backward compatible hyp files whree not set
     hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
     hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
+    hyp['random_pad'] = True # lazy hyp def
+
 
     # Train
     logger.info(opt)
