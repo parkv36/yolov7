@@ -1025,8 +1025,7 @@ def load_mosaic(self, index, filling_value):
                                        perspective=self.hyp['perspective'],
                                        border=self.mosaic_border,
                                        filling_value=filling_value,
-                                       is_fill_by_mean_img=self.is_tir_signal,
-                                       random_pad=self.random_pad)# mosaic has its own random padding hence no need to support inside perspective (scaling)
+                                       is_fill_by_mean_img=self.is_tir_signal)# mosaic has its own random padding hence no need to support inside perspective (scaling)
                                          # border to remove
 
     # import tifffile
@@ -1129,8 +1128,7 @@ def load_mosaic9(self, index, filling_value):
                                        perspective=self.hyp['perspective'],
                                        border=self.mosaic_border,
                                        filling_value=filling_value,
-                                       is_fill_by_mean_img=self.is_tir_signal,
-                                       random_pad=self.random_pad)
+                                       is_fill_by_mean_img=self.is_tir_signal)
 
     return img9, labels9
 
@@ -1400,6 +1398,12 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
         else:  # affine
             img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
+
+        # import tifffile
+        # unique_run_name = str(int(time.time_ns()))
+        #
+        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', str(unique_run_name) + '_' + 'img_projective_before_pad' + str(s) + '_' +  str(T[0, 2]) + '_'  + str(T[1, 2]) + '.tiff'),
+        #                  img[:,:,np.newaxis])
 
         if random_pad:
 
