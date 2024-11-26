@@ -759,7 +759,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                                                      is_fill_by_mean_img=self.is_tir_signal,
                                                      random_pad=self.random_pad)
                     if np.isnan(img).any():
-                        print('img is nan gamma')
+                        print('img is nan no mosaic after rand perspective')
 
             if random.random() < hyp['inversion']:
                 img = inversion_aug(img)
@@ -775,8 +775,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if random.random() < hyp['gamma_liklihood']:
                 if img.dtype == np.uint16 or img.dtype == np.uint8:
                     img = img/np.iinfo(img.dtype).max
-                if img.max() > 1.0:
-                    warnings.warn("gamma correction operates over standartized images [0-1]!!!")
+                if (img.max()> 1.0).any():
+                    img[img > 1.0] = 1.0
+                if (img < 0).any():
+                    img[img < 0] = 0
+
                 gamma = np.random.uniform(hyp['gamma'], 200-hyp['gamma']) / 100.0
                 img = adjust_gamma(img, gamma, gain=1)
 
