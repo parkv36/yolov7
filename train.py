@@ -811,21 +811,27 @@ if __name__ == '__main__':
         assert opt.batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
         opt.batch_size = opt.total_batch_size // opt.world_size
 
+
     # clearml support
     if clear_ml: #clearml support
         config_file = task.connect_configuration(opt.hyp, name='hyperparameters_cfg')
         with open(config_file) as f:
             hyp = yaml.load(f, Loader=yaml.SafeLoader)  # data dict
+        # defaults for backward compatible hyp files whree not set
+        hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
+        hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
+        hyp['random_pad'] = True  # lazy hyp def
+
         print("", 100 * '==')
         print('Hyperparameters:', hyp)
     else:
         # Hyperparameters
         with open(opt.hyp) as f:
             hyp = yaml.load(f, Loader=yaml.SafeLoader)  # load hyps
-    #defaults for backward compatible hyp files whree not set
-    hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
-    hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
-    hyp['random_pad'] = True # lazy hyp def
+        #defaults for backward compatible hyp files whree not set
+        hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
+        hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
+        hyp['random_pad'] = True # lazy hyp def
 
 
     # Train
