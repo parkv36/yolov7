@@ -307,8 +307,17 @@ class LoadImages:  # for inference
             plt.hist(img.ravel(), bins=128)
             plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(path).split('.')[0]+ 'pre'))
 
-        img = scaling_image(img, scaling_type=self.scaling_type,
-                            percentile=self.percentile, beta=self.beta)
+        file_type = os.path.basename(self.img_files[index]).split('.')[-1].lower()
+
+        if (file_type !='tiff' and file_type != 'png'):
+            print('!!!!!!!!!!!!!!!!  index : {}  {} unrecognized '.format(index, self.img_files[index]))
+
+        if file_type != 'png':
+            img = scaling_image(img, scaling_type=self.scaling_type,
+                                percentile=self.percentile, beta=self.beta)
+        else:
+            img = scaling_image(img,
+                                scaling_type='single_image_0_to_1')  # safer in case double standartiozation one before mosaic and her the last one since mosaic is random based occurance
 
         if 0:
             import matplotlib.pyplot as plt
@@ -685,6 +694,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     def __getitem__(self, index):
         index = self.indices[index]  # linear, shuffled, or image_weights
 
+        file_type = os.path.basename(self.img_files[index]).split('.')[-1].lower()
+
+        if (file_type !='tiff' and file_type != 'png'):
+            print('!!!!!!!!!!!!!!!!  index : {}  {} unrecognized '.format(index, self.img_files[index]))
+
         if self.is_tir_signal:
             if self.scaling_before_mosaic:
                 filling_value = 0.5  # on borders or after perspective  fill with 0.5 in [0 1] equals to 114 in [0 255]
@@ -698,17 +712,17 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if mosaic:
             # Load mosaic
             if random.random() < 0.8:
-                img, labels = load_mosaic(self, index, filling_value=filling_value)
+                img, labels = load_mosaic(self, index, filling_value=filling_value, file_type=file_type)
             else:
-                img, labels = load_mosaic9(self, index, filling_value=filling_value)
+                img, labels = load_mosaic9(self, index, filling_value=filling_value, file_type=file_type)
             shapes = None
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
             if random.random() < hyp['mixup']:
                 if random.random() < 0.8:
-                    img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value)
+                    img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value, file_type=file_type)
                 else:
-                    img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value)
+                    img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value, file_type=file_type)
                 r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
                 img = (img * r + img2 * (1 - r)).astype(img.dtype)#.astype(np.uint8)
                 labels = np.concatenate((labels, labels2), 0)
@@ -796,8 +810,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             
             if random.random() < hyp['paste_in']:
                 sample_labels, sample_images, sample_masks = [], [], [] 
-                while len(sample_labels) < 30:
-                    sample_labels_, sample_images_, sample_masks_ = load_samples(self, random.randint(0, len(self.labels) - 1))
+                while len(sample_labels) < 30: # upto 30 tries to have mosaic of 4 images (anchor + 3 X random)
+                    sample_labels_, sample_images_, sample_masks_ = load_samples(self, random.randint(0, len(self.labels) - 1), file_type=file_type)
                     sample_labels += sample_labels_
                     sample_images += sample_images_
                     sample_masks += sample_masks_
@@ -805,6 +819,18 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     if len(sample_labels) == 0:
                         break
                 labels = pastein(img, labels, sample_labels, sample_images, sample_masks)
+                # try:
+                #
+                #     tag='paste_in'
+                #     import tifffile
+                #     if len(img.shape) == 2:
+                #         tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+                #                          img[:,:,np.newaxis])
+                #     else:
+                #         tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+                #                          img)
+                # except Exception as e:
+                #     print(e)
 
         nL = len(labels)  # number of labels
         if nL:
@@ -845,14 +871,19 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # import tifffile
             # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_before_last_scaling.tiff'), img.transpose(1,2,0))
+            # In case moasaic of mixed PNG and TIFF the TIFF is pre scaled while the PNG shouldn;t
+            if file_type != 'png':
+                img = scaling_image(img, scaling_type=self.scaling_type,
+                                    percentile=self.percentile, beta=self.beta)
+            else:
+                img = scaling_image(img, scaling_type='single_image_0_to_1') # safer in case double standartiozation one before mosaic and her the last one since mosaic is random based occurance
 
-            img = scaling_image(img, scaling_type=self.scaling_type,
-                                percentile=self.percentile, beta=self.beta)
+                # print('ka')
             if 0:
                 import matplotlib.pyplot as plt
                 plt.figure()
                 plt.hist(img.ravel(), bins=128)
-                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0] + 'post_'+ str(self.scaling_type)))
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/output', os.path.basename(self.img_files[index]).split('.')[0] + 'post_'+ str(self.scaling_type)))
                 # aa1 = np.repeat(img[1,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32')
                 # cv2.imwrite('test/exp40/test_batch88_labels__1.jpg', aa1*255)
                 # aa1 = np.repeat(img.transpose(1,2,0), 3, axis=2).astype('float32')
@@ -860,10 +891,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if np.isnan(img).any():
             print('img {} index : {} is nan fin'.format(self.img_files[index], index))
             # raise
+        # tag='png'
         # import tifffile
         # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
         #                  img.transpose(1, 2, 0))
-        #
+        # #
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
@@ -914,6 +946,9 @@ def load_image(self, index):
             img = img[:, :, np.newaxis] # (640,640, 1)
         else:
             img = cv2.imread(path)  # BGR
+            if self.is_tir_signal:
+                img = img[:,:,0] # channels are duplicated in the source
+                img = img[:, :, np.newaxis]
         assert img is not None, 'Image Not Found ' + path
         h0, w0 = img.shape[:2]  # orig hw
         r = self.img_size / max(h0, w0)  # resize image to img_size
@@ -939,7 +974,7 @@ def augment_hsv(img, hgain=0.5, sgain=0.5, vgain=0.5):
     cv2.cvtColor(img_hsv, cv2.COLOR_HSV2BGR, dst=img)  # no return needed
 
 def inversion_aug(img):
-    if img.dtype == np.uint16 or img.dtype == np.int8:
+    if img.dtype == np.uint16 or img.dtype == np.uint8:
         img = np.iinfo(img.dtype).max - img
         return img
     elif img.dtype == np.float32 or img.dtype == np.float64:
@@ -960,7 +995,7 @@ def hist_equalize(img, clahe=True, bgr=False):
     return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR if bgr else cv2.COLOR_YUV2RGB)  # convert YUV image to RGB
 
 
-def load_mosaic(self, index, filling_value):
+def load_mosaic(self, index, filling_value, file_type='tiff'):
     # loads images in a 4-mosaic
 
     labels4, segments4 = [], []
@@ -971,8 +1006,12 @@ def load_mosaic(self, index, filling_value):
         # Load image
         img, _, (h, w) = load_image(self, index)
         if self.scaling_before_mosaic:
-            img = scaling_image(img, scaling_type=self.scaling_type,
-                                percentile=self.percentile, beta=self.beta)
+            if file_type == 'png':
+                img = scaling_image(img, scaling_type='single_image_0_to_1')
+            else:
+                img = scaling_image(img, scaling_type=self.scaling_type,
+                                    percentile=self.percentile, beta=self.beta)
+
         # import tifffile
         # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
         #                               'img_projective_' + str(self.img_files[index].split('/')[-1].split('.tiff')[0]) +'.tiff'), img)
@@ -1016,7 +1055,7 @@ def load_mosaic(self, index, filling_value):
     # Augment
     #img4, labels4, segments4 = remove_background(img4, labels4, segments4)
     #sample_segments(img4, labels4, segments4, probability=self.hyp['copy_paste'])
-    img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste'])
+    img4, labels4, segments4 = copy_paste(img4, labels4, segments4, probability=self.hyp['copy_paste']) # mainly for instance segmentation ??!! #@@HK
     img4, labels4 = random_perspective(img4, labels4, segments4,
                                        degrees=self.hyp['degrees'],
                                        translate=self.hyp['translate'],
@@ -1045,7 +1084,7 @@ def load_mosaic(self, index, filling_value):
     return img4, labels4
 
 
-def load_mosaic9(self, index, filling_value):
+def load_mosaic9(self, index, filling_value, file_type='tiff'):
     # loads images in a 9-mosaic
 
     labels9, segments9 = [], []
@@ -1055,8 +1094,11 @@ def load_mosaic9(self, index, filling_value):
         # Load image
         img, _, (h, w) = load_image(self, index)
         if self.scaling_before_mosaic:
-            img = scaling_image(img, scaling_type=self.scaling_type,
-                                percentile=self.percentile, beta=self.beta)
+            if file_type == 'png':
+                img = scaling_image(img, scaling_type='single_image_0_to_1')
+            else:
+                img = scaling_image(img, scaling_type=self.scaling_type,
+                                    percentile=self.percentile, beta=self.beta)
 
         # place img in img9
         if i == 0:  # center
@@ -1116,7 +1158,7 @@ def load_mosaic9(self, index, filling_value):
 
     # Augment
     #img9, labels9, segments9 = remove_background(img9, labels9, segments9)
-    img9, labels9, segments9 = copy_paste(img9, labels9, segments9, probability=self.hyp['copy_paste'])
+    img9, labels9, segments9 = copy_paste(img9, labels9, segments9, probability=self.hyp['copy_paste']) # mainly for instance segmentation ??!! #@@HK
 
     # Perspective transformation can create holes in thermal better fill w/o reflection
 
@@ -1133,7 +1175,7 @@ def load_mosaic9(self, index, filling_value):
     return img9, labels9
 
 
-def load_samples(self, index):
+def load_samples(self, index, file_type='tiff'):
     # loads images in a 4-mosaic
 
     labels4, segments4 = [], []
@@ -1143,6 +1185,14 @@ def load_samples(self, index):
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
+
+        if self.scaling_before_mosaic:
+            if file_type == 'png':
+                img = scaling_image(img, scaling_type='single_image_0_to_1')
+            else:
+                img = scaling_image(img, scaling_type=self.scaling_type,
+                                    percentile=self.percentile, beta=self.beta)
+
 
         # place img in img4
         if i == 0:  # top left

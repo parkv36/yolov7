@@ -109,6 +109,8 @@ def test(data,
         hyp['beta'] = 0.3
         hyp['gamma'] = 80 # dummy anyway augmentation is disabled
         hyp['gamma_liklihood'] = 0.01
+        hyp['random_pad'] = True
+        hyp['copy_paste'] = False
         # augment=False explicit no augmentation to test
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, hyp, pad=0.5, augment=False, rect=False, #rect was True  # HK@@@ TODO : why pad =0.5?? only effective in rect=True in test time ? https://github.com/ultralytics/ultralytics/issues/13271
                                        prefix=colorstr(f'{task}: '), rel_path_images=data['path'], num_cls=data['nc'])[0]
