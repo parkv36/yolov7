@@ -138,7 +138,7 @@ def test(data,
         with torch.no_grad():
             # Run model
             t = time_synchronized()
-            out, train_out = model(img, augment=augment)  # inference(4 coordination, obj conf, cls conf ) and training outputs(batch_size, anchor per scale, x,y dim of scale out 40x40 ,n_classes-conf+1-objectness+4-bbox ) over 3 scales diferent outputs (2,2,80,80,7), (2,2,40,40,7)  : 640/8=40
+            out, train_out = model(img, augment=augment)  # inference out [batch, proposals, figures_of] figures_of :(4 coordination, obj conf, cls conf ) and training outputs(batch_size, anchor per scale, x,y dim of scale out 40x40 ,n_classes-conf+1-objectness+4-bbox ) over 3 scales diferent outputs (2,2,80,80,7), (2,2,40,40,7)  : 640/8=40
             t0 += time_synchronized() - t
             # out coco 80 classes : [1, 25200, 85] [batch, proposals_3_scales,4_box__coord+1_obj_score + n x classes]
             # Compute loss

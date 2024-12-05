@@ -7,7 +7,7 @@ path: /mnt/Data/hanoch/tir_frames_rois/yolo7_tir_data_all #/home/hanoch/projects
 #train: ./yolov7/tir_od/training_set.txt #./yolov7/tir_od/training_set.txt # ./yolov7/tir_od/tir_tiff_car_person_min_size_44_31_training_set.txt #./yolov7/tir_od/training_set.txt #./yolov7/tir_od/training_set.txt  # 118287 images
 val: ./yolov7/tir_od/center_roi_only_validation_set.txt #./yolov7/tir_od/tir_tiff_car_person_min_size_44_31_validation_set.txt #./yolov7/tir_od/validation_set.txt #./yolov7/tir_od/val_tir_od.txt #./yolov7/tir_od/validation_set.txt  # 5000 images
 
-test: ./yolov7/tir_od/center_roi_only_training_set.txt # data at tir_tiff_tiff_files
+train: ./yolov7/tir_od/center_roi_only_training_set.txt # data at tir_tiff_tiff_files
 #test: ./yolov7/tir_od/test_set/tir_tiff_tiff_folder_test_set.txt # data at tir_tiff_tiff_files
 #test: ./tir_od/test-dev2017.txt  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
 
