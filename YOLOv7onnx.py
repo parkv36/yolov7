@@ -264,7 +264,7 @@ def main(opt):
             t = time_synchronized()
             outname = [i.name for i in session.get_outputs()]
             inname = [i.name for i in session.get_inputs()]
-            print(inname, outname)
+            # print(inname, outname)
 
             for ix, im in enumerate(img):
                 if test_vectors_test:
@@ -378,8 +378,8 @@ def main(opt):
         # if 1:
         #     print('Speed: %.1f/%.1f/%.1f ms inference/NMS/total per %gx%g image at batch-size %g' % t)
         # Predicted: [(bbox, class_id, confidence)]
-        map = compute_map(predictions, ground_truths, num_classes=3, iou_threshold=0.5)
-        print(f"mAP: {map:.2f}")
+    map = compute_map(predictions, ground_truths, num_classes=3, iou_threshold=0.5)
+    print(f"mAP: {map:.2f}")
 
     return
 

@@ -16,7 +16,7 @@ from utils.general import coco80_to_coco91_class, check_dataset, check_file, che
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt, append_to_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
-
+import pandas as pd
 
 def test(data,
          weights=None,
@@ -126,6 +126,17 @@ def test(data,
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
+    # res_all = list()
+    predictions_df = pd.DataFrame(columns=[
+        'image_id',
+        'pred_cls',
+        'bbox_x',
+        'bbox_y',
+        'bbox_w',
+        'bbox_h',
+        'score'
+    ])
+
     stats_all_large, stats_person_medium = [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
@@ -164,8 +175,8 @@ def test(data,
             if len(pred) == 0:
                 if nl:
                     stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))    #niou for COCO 0.5:0.05:1
-                    stats_all_large.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
-                    stats_person_medium.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                    # stats_all_large.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                    # stats_person_medium.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
                 continue
 
             # Predictions
@@ -199,11 +210,47 @@ def test(data,
                 image_id = int(path.stem) if path.stem.isnumeric() else path.stem
                 box = xyxy2xywh(predn[:, :4])  # xywh
                 box[:, :2] -= box[:, 2:] / 2  # xy center to top-left corner
+                collect_info = list()
                 for p, b in zip(pred.tolist(), box.tolist()):
                     jdict.append({'image_id': image_id,
                                   'category_id': coco91class[int(p[5])] if is_coco else int(p[5]),
                                   'bbox': [round(x, 3) for x in b],
                                   'score': round(p[4], 5)})
+
+                    collect_info.append({'category_id': coco91class[int(p[5])] if is_coco else int(p[5]),
+                                  'bbox': [round(x, 3) for x in b],
+                                  'score': round(p[4], 5)})
+
+                    predictions_df = pd.concat([
+                        predictions_df,
+                        pd.DataFrame({
+                            'image_id': [image_id],
+                            'pred_cls': [coco91class[int(p[5])] if is_coco else int(p[5])],
+                            'bbox_x': [[round(x, 3) for x in b][0]],
+                            'bbox_y': [[round(x, 3) for x in b][1]],
+                            'bbox_w': [[round(x, 3) for x in b][2]],
+                            'bbox_h': [[round(x, 3) for x in b][3]],
+                            'score':  [round(p[4], 5)]
+                        })
+                    ], ignore_index=True)
+
+                    for it in labels.cpu().numpy():
+                        # jdict.append({'image_id': image_id,
+                        #               'gt_cls': it[0],
+                        #               'bbox': [round(x, 3) for x in it[1:]]})
+
+                        predictions_df = pd.concat([
+                            predictions_df,
+                            pd.DataFrame({
+                                'image_id': [image_id],
+                                'gt_cls': [it[0]],
+                                'bbox': [[round(x, 3) for x in it[1:]]]})
+                        ], ignore_index=True)
+
+                # res_all.append({'image_id': image_id, 'inf' :collect_info})
+
+            # df = pd.DataFrame(res_all)
+
 
             # Assign all predictions as incorrect ; pred takes top 300 predictions conf over 10 ious [0.5:0.95:0.05]
             correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
@@ -240,6 +287,17 @@ def test(data,
 
             # Append statistics (correct, conf_objectness, pcls, tcls) Predicted class is Max-Likelihood among all classes logit and threshol goes over the objectness only
             stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls)) # correct @ IOU=0.5 of pred box with target
+
+            if save_json:
+                predictions_df = pd.concat([
+                    predictions_df,
+                    pd.DataFrame({
+                        'image_id': [image_id],
+                        'correct': [correct[:, 0].cpu()]
+                    })
+                ], ignore_index=True)
+
+
             if not training or 1:
                 # assert len(pred[:, :4]) == 1
                 x, y, w, h = xyxy2xywh(pred[:, :4])[0]
@@ -345,6 +403,7 @@ def test(data,
         w = Path(weights[0] if isinstance(weights, list) else weights).stem if weights is not None else ''  # weights
         anno_json = './coco/annotations/instances_val2017.json'  # annotations json
         pred_json = str(save_dir / f"{w}_predictions.json")  # predictions json
+        pred_df_file = str(save_dir / f"{w}_predictions.csv")  # predictions json
         print('\nEvaluating pycocotools mAP... saving %s...' % pred_json)
         with open(pred_json, 'w') as f:
             json.dump(jdict, f)
@@ -373,6 +432,10 @@ def test(data,
     maps = np.zeros(nc) + map
     for i, c in enumerate(ap_class):
         maps[c] = ap[i]
+
+    if save_json:
+        predictions_df.to_csv(pred_df_file, index=False)
+
     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
 if __name__ == '__main__':
@@ -478,5 +541,6 @@ test based on RGB coco model
 
 --weights /mnt/Data/hanoch/runs/train/yolov7575/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
 --weights /home/hanoch/projects/tir_od/runs/gpu02/yolov74/weights --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
-
+-------  Error analysis  ------------
+1st run with conf_th=0.0001 then observe the desired threshold, re-run with the desired threshold abd observe images with bboxes given the deired threshold 
 """
