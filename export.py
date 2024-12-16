@@ -34,7 +34,25 @@ if __name__ == '__main__':
     parser.add_argument('--include-nms', action='store_true', help='export end2end onnx')
     parser.add_argument('--fp16', action='store_true', help='CoreML FP16 half-precision export')
     parser.add_argument('--int8', action='store_true', help='CoreML INT8 quantization')
+
+    parser.add_argument('--no-tir-signal', action='store_true', help='')
+
+    parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
+
+    parser.add_argument('--input-channels', type=int, default=1, help='')
+
+    parser.add_argument('--save-path', default='/mnt/Data/hanoch', help='save to project/name')
+
+
     opt = parser.parse_args()
+
+    if opt.tir_channel_expansion: # operates over 3 channels
+        opt.input_channels = 3
+
+    if opt.tir_channel_expansion and opt.norm_type != 'single_image_percentile_0_1': # operates over 3 channels
+        print('Not a good combination')
+
+
     opt.img_size *= 2 if len(opt.img_size) == 1 else 1  # expand
     opt.dynamic = opt.dynamic and not opt.end2end
     opt.dynamic = False if opt.dynamic_batch else opt.dynamic
@@ -52,7 +70,7 @@ if __name__ == '__main__':
     opt.img_size = [check_img_size(x, gs) for x in opt.img_size]  # verify img_size are gs-multiples
 
     # Input
-    img = torch.zeros(opt.batch_size, 3, *opt.img_size).to(device)  # image size(1,3,320,192) iDetection
+    img = torch.zeros(opt.batch_size, opt.input_channels, *opt.img_size).to(device)  # image size(1,3,320,192) iDetection
 
     # Update model
     for k, m in model.named_modules():
@@ -86,7 +104,7 @@ if __name__ == '__main__':
 
         print('\nStarting CoreML export with coremltools %s...' % ct.__version__)
         # convert model from torchscript and apply pixel scaling as per detect.py
-        ct_model = ct.convert(ts, inputs=[ct.ImageType('image', shape=img.shape, scale=1 / 255.0, bias=[0, 0, 0])])
+        ct_model = ct.convert(ts, inputs=[ct.ImageType('image', shape=img.shape, scale=1 / 255.0, bias=[0, 0, 0])]) # HK@@ TODO modify normalization apparoch or remove from onnx
         bits, mode = (8, 'kmeans_lut') if opt.int8 else (16, 'linear') if opt.fp16 else (32, None)
         if bits < 32:
             if sys.platform.lower() == 'darwin':  # quantization only supported on macOS

@@ -72,7 +72,10 @@ def exif_size(img):
 # import warnings
 # warnings.filterwarnings('error', category=RuntimeWarning)
 def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
-    if scaling_type == 'standardization': # default by repo
+    if scaling_type == 'no_norm':
+        img = img
+
+    elif scaling_type == 'standardization': # default by repo
         img = img/ 255.0
 
     elif scaling_type =="single_image_0_to_1":
@@ -903,6 +906,12 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
+    # Labels : When it comes to annotations, YOLOv8 uses relative coordinates rather than absolute pixel values for the
+    # bounding box positions. This means that the labels are in the range of 0 to 1 relative to the image width and height.
+    # Consequently, these labels will remain consistent regardless of image resizing. Hence, you do not need to change,
+    # adjust or resize the annotations or labels when the images are resized during training. The model will handle this
+    # process automatically.
+
 
     @staticmethod
     def collate_fn(batch):

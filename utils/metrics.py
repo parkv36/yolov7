@@ -19,7 +19,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False, sa
     """ Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
     # Arguments
-        tp:  True positives (nparray, nx1 or nx10).
+        tp:  True positives (nparray, nx1 or nx10). nx10 due to 10 IOUs over 10 ious [0.5:0.95:0.05]
         conf:  Objectness value from 0-1 (nparray).
         pred_cls:  Predicted object classes (nparray).
         target_cls:  True object classes (nparray).
@@ -58,7 +58,7 @@ def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False, sa
             # Hence px becomes the new conf linearily spaced axis
             # Precision
             precision = tpc / (tpc + fpc)  # precision curve
-            p[ci] = np.interp(-px, -conf[i], precision[:, 0], left=1)  # p at pr_score. same interp for precision=func(conf)
+            p[ci] = np.interp(-px, -conf[i], precision[:, 0], left=1)  # p at pr_score. same interp for precision=func(conf) = > precision@ px linealiy spaced
 
             # AP from recall-precision curve
             for j in range(tp.shape[1]):
@@ -201,6 +201,7 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
             try:
                 if np.array(precisions_of_interest).min() < np.array(py[:, i]).max(): # make sure that precision has the values in the interest ROI
                     recall_of_interest_per_class = [px[int(np.where(y.reshape(-1) > x)[0][-1])] for x in precisions_of_interest]
+                    conf_at_precision_of_iterest = px[::-1][[int(np.where(y.reshape(-1) > x)[0][-1]) for x in precisions_of_interest]]
             except Exception as e:
                 print(e)
                 print(precisions_of_interest)
@@ -210,7 +211,7 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
             for k in range(len(precisions_of_interest)):
                 ax.plot(recall_of_interest_per_class[k], precisions_of_interest[k], '*', color='green')
                 ax.text(x=recall_of_interest_per_class[k], y=precisions_of_interest[k], fontsize=12,
-                        s=f"th={recall_of_interest_per_class[k]:.2f}")
+                        s=f"th={conf_at_precision_of_iterest[k]:.2f}")
                 # ax.text(x=0.6, y=precisions_of_interest[i], fontsize=12, s=f" R/P {names[i]}[ {recall_of_interest_per_class[i]:.3f}    {precisions_of_interest[i]:.3f}]")
                 # ax.text(x=0.6, y=max(0.9-0.2*i, 0), fontsize=12, s=f" R/P {names[i]}[ {recall_of_interest_per_class[i]:.3f}    {precisions_of_interest[i]:.3f}]")
                 if k == 0:
