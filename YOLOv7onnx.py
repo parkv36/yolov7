@@ -16,7 +16,8 @@ from utils.datasets import create_dataloader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
-
+from utils.metrics import ap_per_class
+from utils.general import box_iou
 from utils.general import xywh2xyxy
 from collections import defaultdict
 def compute_iou(box1, box2):
@@ -165,7 +166,8 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleu
     return im, r, (dw, dh)
 
 def main(opt):
-
+    p_r_iou = 0.5
+    niou = 1
     # Model
     cuda = [True if torch.cuda.is_available() else False][0]
     if 0:
@@ -234,7 +236,10 @@ def main(opt):
 
     predictions = list()
     ground_truths = list()
-
+    stats = []
+    seen = 0
+    names = ['car', 'person']
+    # Batchwise
     for img, targets, paths, shapes in tqdm(dataloader):
         img = img.cpu().numpy().astype('float32').transpose(0, 2,3,1) # channel last
         nb, _, height, width = img.shape  # batch size, channels, height, width
@@ -245,8 +250,9 @@ def main(opt):
             outname = [i.name for i in session.get_outputs()]
             inname = [i.name for i in session.get_inputs()]
             # print(inname, outname)
-
+            # image wise inside batch
             for ix, im in enumerate(img):
+                seen += 1
                 if test_vectors_test:
                     im = cv2.imread(test_image)  # BGR
                     if not(opt.no_tir_signal):
@@ -308,6 +314,49 @@ def main(opt):
 
                     # Ground truths: [(bbox, class_id)]
                     ground_truths.extend([(x, y) for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
+                    # ******************
+                    # Like test.py
+                    labels = torch.tensor([[y.item()] + x for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
+                    nl = len(labels)
+                    if nl == ml_class_id.shape[0]:
+                        print('prob all TP')
+                        print('path', paths[seen-1])
+                        predn[pi, :4]
+                    tcls = labels[:, 0].tolist() if nl else []  # target class
+                    pred = torch.tensor([np.append(np.append(bboxes_, scores_above_th_.item()), ml_class_id_.item()) for bboxes_, ml_class_id_, scores_above_th_ in
+                                                    zip(bboxes, ml_class_id, scores_above_th_val)])
+
+                    predn = pred.clone()
+                    tbox = labels[:, 1:5]
+                    correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=opt.device)
+                    if nl:
+                        detected = []  # target indices
+                        tcls_tensor = labels[:, 0]
+                        # Per target class
+                        for cls in torch.unique(tcls_tensor):
+                            ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
+                            pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+
+                            # Search for detections
+                            if pi.shape[0]:
+                                # Prediction to target ious
+                                ious, i = box_iou(predn[pi, :4], tbox[ti]).max(1)  # best ious, indices
+
+                                # Append detections
+                                detected_set = set()
+                                for j in (ious > p_r_iou).nonzero(as_tuple=False): # iouv[0]=0.5 IOU for dectetions iouv in general are all 0.5:0.05:.. for COCO
+                                    d = ti[i[j]]  # detected target
+                                    if d.item() not in detected_set:
+                                        detected_set.add(d.item())
+                                        detected.append(d)
+                                        correct[pi[j]] = ious[j] > p_r_iou  # iou_thres is 1xn
+                                        if len(detected) == nl:  # all targets already located in image
+                                            break
+                    stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(),
+                                  tcls))  # correct @ IOU=0.5 of pred box with target
+
+
+
                 else:
                     if test_vectors_test: # since no labels file annotations are not resized like dat is implicitly
                         if reshape:
@@ -388,7 +437,14 @@ def main(opt):
         #     print('Speed: %.1f/%.1f/%.1f ms inference/NMS/total per %gx%g image at batch-size %g' % t)
         # Predicted: [(bbox, class_id, confidence)]
     if is_new_model:
-        map = compute_map(predictions, ground_truths, num_classes=2, iou_threshold=0.5, conf_th=det_threshold)
+        stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+        if len(stats) and stats[0].any():  # P, R @  # max F1 index
+            p, r, ap, f1, ap_class = ap_per_class(*stats, plot=True, v5_metric=False, save_dir=save_path,
+                                                  names=names)  # based on correct @ IOU=0.5 of pred box with target
+        for i, c in enumerate(ap_class):
+            print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+
+        # map = compute_map(predictions, ground_truths, num_classes=2, iou_threshold=0.5, conf_th=det_threshold)
     else:
         map = compute_map(predictions, ground_truths, num_classes=3, iou_threshold=0.5, conf_th=det_threshold)
     print(f"mAP: {map:.2f}")
