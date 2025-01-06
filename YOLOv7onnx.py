@@ -5,6 +5,7 @@ from tqdm import tqdm
 from torchvision.ops import batched_nms
 import matplotlib.pyplot as plt
 import cv2
+import pandas as pd
 #%%
 import random
 import numpy as np
@@ -12,12 +13,13 @@ import onnxruntime as ort
 from PIL import Image
 import argparse
 
-from utils.datasets import create_dataloader
+from utils.datasets import create_dataloader, create_folder
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
 from utils.metrics import ap_per_class
 from utils.general import box_iou
+import os
 from utils.general import xywh2xyxy
 from collections import defaultdict
 def compute_iou(box1, box2):
@@ -166,6 +168,10 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleu
     return im, r, (dw, dh)
 
 def main(opt):
+
+    create_folder(opt.save_path)
+
+    pred_tgt_acm = list()
     p_r_iou = 0.5
     niou = 1
     # Model
@@ -318,10 +324,10 @@ def main(opt):
                     # Like test.py
                     labels = torch.tensor([[y.item()] + x for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
                     nl = len(labels)
-                    if nl == ml_class_id.shape[0]:
-                        print('prob all TP')
-                        print('path', paths[seen-1])
-                        predn[pi, :4]
+                    # if nl == ml_class_id.shape[0]:
+                    #     print('prob all TP')
+                    #     print('path', paths[seen-1])
+                    #     predn[pi, :4]
                     tcls = labels[:, 0].tolist() if nl else []  # target class
                     pred = torch.tensor([np.append(np.append(bboxes_, scores_above_th_.item()), ml_class_id_.item()) for bboxes_, ml_class_id_, scores_above_th_ in
                                                     zip(bboxes, ml_class_id, scores_above_th_val)])
@@ -354,7 +360,7 @@ def main(opt):
                                             break
                     stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(),
                                   tcls))  # correct @ IOU=0.5 of pred box with target
-
+                    pred_tgt_acm.append({'correct': correct.cpu().numpy(), 'conf': pred[:, 4].cpu().numpy(), 'pred_cls': pred[:, 5].cpu().numpy(), 'tcls': tcls} )
 
 
                 else:
@@ -437,9 +443,12 @@ def main(opt):
         #     print('Speed: %.1f/%.1f/%.1f ms inference/NMS/total per %gx%g image at batch-size %g' % t)
         # Predicted: [(bbox, class_id, confidence)]
     if is_new_model:
+        df = pd.DataFrame(pred_tgt_acm)
+        df.to_csv(os.path.join(opt.save_path, 'onnx_model_pred_tgt_acm_conf_th_' + str(det_threshold.__format__('.3f')) + '.csv'), index=False)
+
         stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
         if len(stats) and stats[0].any():  # P, R @  # max F1 index
-            p, r, ap, f1, ap_class = ap_per_class(*stats, plot=True, v5_metric=False, save_dir=save_path,
+            p, r, ap, f1, ap_class = ap_per_class(*stats, plot=True, v5_metric=False, save_dir=opt.save_path,
                                                   names=names)  # based on correct @ IOU=0.5 of pred box with target
         for i, c in enumerate(ap_class):
             print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
@@ -473,7 +482,6 @@ if __name__ == '__main__':
 
 
     opt = parser.parse_args()
-
 
     main(opt=opt)
 

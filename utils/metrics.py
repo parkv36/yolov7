@@ -210,8 +210,12 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
             ax.plot(recall_of_interest_per_class, precisions_of_interest, '*', color='green')
             for k in range(len(precisions_of_interest)):
                 ax.plot(recall_of_interest_per_class[k], precisions_of_interest[k], '*', color='green')
-                ax.text(x=recall_of_interest_per_class[k], y=precisions_of_interest[k], fontsize=12,
-                        s=f"th={conf_at_precision_of_iterest[k]:.2f}")
+                try:
+                    ax.text(x=recall_of_interest_per_class[k], y=precisions_of_interest[k], fontsize=12,
+                            s=f"th={conf_at_precision_of_iterest[k]:.2f}")
+                except Exception as e:
+                    print(f'WARNING: cant plot recall of interest too few data or so: {e}')
+
                 # ax.text(x=0.6, y=precisions_of_interest[i], fontsize=12, s=f" R/P {names[i]}[ {recall_of_interest_per_class[i]:.3f}    {precisions_of_interest[i]:.3f}]")
                 # ax.text(x=0.6, y=max(0.9-0.2*i, 0), fontsize=12, s=f" R/P {names[i]}[ {recall_of_interest_per_class[i]:.3f}    {precisions_of_interest[i]:.3f}]")
                 if k == 0:

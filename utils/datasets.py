@@ -71,25 +71,49 @@ def exif_size(img):
 
 # import warnings
 # warnings.filterwarnings('error', category=RuntimeWarning)
-def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
+def scaling_image(img, scaling_type, percentile:float =0.03,
+                  beta:float =0.3, roi :tuple=(), img_size: int=640):
     if scaling_type == 'no_norm':
+        if bool(roi):
+            raise
         img = img
 
     elif scaling_type == 'standardization': # default by repo
+        if bool(roi):
+            raise
         img = img/ 255.0
 
     elif scaling_type =="single_image_0_to_1":
+        if bool(roi):
+            raise
         max_val = np.max(img.ravel())
         min_val = np.min(img.ravel())
         img = np.double(img - min_val) / (np.double(max_val - min_val)  + eps)
         img = np.minimum(np.maximum(img, 0), 1)
 
     elif scaling_type == 'single_image_mean_std':
+        if bool(roi):
+            raise
         img = (img - img.ravel().mean()) / img.ravel().std()
 
     elif scaling_type == 'single_image_percentile_0_1':
-        min_val = np.percentile(img.ravel(), percentile)
-        max_val = np.percentile(img.ravel(), 100-percentile)
+        if bool(roi):
+            dw, dh = img_size[1] - roi[1], img_size[0] - roi[0]  # wh padding
+            dw /= 2  # divide padding into 2 sides
+            dh /= 2
+            top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+            left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+
+            if len(img.shape) == 2:
+                img_crop = img[bottom:-top, :]
+            else:
+                img_crop = img[:, bottom:-top, :]
+
+            min_val = np.percentile(img_crop.ravel(), percentile)
+            max_val = np.percentile(img_crop.ravel(), 100-percentile)
+        else:
+            min_val = np.percentile(img.ravel(), percentile)
+            max_val = np.percentile(img.ravel(), 100-percentile)
         img = np.double(img - min_val) / (np.double(max_val - min_val) + eps)
         img = np.minimum(np.maximum(img, 0), 1)
 
@@ -98,6 +122,8 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
         # max_val = np.percentile(img.ravel(), 100 - percentile)
         # img = np.double(img - min_val) / np.double(max_val - min_val)
         # img = np.uint8(np.minimum(np.maximum(img, 0), 1)*255)
+        if bool(roi):
+            raise
         ImgMin = np.percentile(img, percentile)
         ImgMax = np.percentile(img, 100-percentile)
         ImgDRC = (np.double(img - ImgMin) / (np.double(ImgMax - ImgMin)) * 255 + eps)
@@ -107,6 +133,8 @@ def scaling_image(img, scaling_type, percentile=0.03, beta=0.3):
 
 
     elif scaling_type == 'remove+global_outlier_0_1':
+        if bool(roi):
+            raise
         img = np.double(img - img.min()*(beta))/np.double(img.max()*(1-beta) - img.min()*(beta))  # beta in [percentile]
         img = np.double(np.minimum(np.maximum(img, 0), 1))
     elif scaling_type == 'normalization_uint16':
@@ -310,7 +338,7 @@ class LoadImages:  # for inference
             plt.hist(img.ravel(), bins=128)
             plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(path).split('.')[0]+ 'pre'))
 
-        file_type = os.path.basename(self.img_files[index]).split('.')[-1].lower()
+        file_type = os.path.basename(path).split('.')[-1].lower()
 
         if (file_type !='tiff' and file_type != 'png'):
             print('!!!!!!!!!!!!!!!!  index : {}  {} unrecognized '.format(index, self.img_files[index]))
@@ -499,7 +527,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.hyp = hyp
         self.image_weights = image_weights
         self.rect = False if image_weights else rect
-        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)  @@ HK TODO: disable mosaic implicitly by prob mosaic =0
+        self.mosaic = self.augment and not self.rect  # load 4 images at a time into a mosaic (only during training)
         self.mosaic_border = [-img_size // 2, -img_size // 2]
         self.stride = stride
         self.path = path
@@ -734,6 +762,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 img = (img * r + img2 * (1 - r)).astype(img.dtype)#.astype(np.uint8)
                 labels = np.concatenate((labels, labels2), 0)
 
+
         else:
             # Load image
             img, (h0, w0), (h, w) = load_image(self, index)
@@ -741,12 +770,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # Letterbox
             shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
             # img, ratio, pad = letterbox(img, shape, color=(img.mean(), img.mean(), img.mean()), auto=False, scaleup=self.augment)
-            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment, random_pad=self.random_pad)
+
             shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
             labels = self.labels[index].copy()
             if labels.size:  # normalized xywh to pixel xyxy format
                 labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+
 
             if self.tir_channel_expansion:  # HK @@ according to the paper this CE is a sort of augmentation hence no need to preliminary augment. One of the channels are inversion hence avoid channel inversion aug
                 img = np.repeat(img[np.newaxis, :, :], 3, axis=0)  # convert GL to RGB by replication
@@ -791,7 +822,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             # GL gain/attenuation
             # Squeeze pdf (x-mu)*scl+mu
             #img, labels = self.albumentations(img, labels)
-            img = self.albumentations_gamma_contrast(img)
+            img = self.albumentations_gamma_contrast(img) # apply RandomBrightnessContrast only since it has buggy response
 
             if random.random() < hyp['gamma_liklihood']:
                 if img.dtype == np.uint16 or img.dtype == np.uint8:
@@ -865,7 +896,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_ce.tiff'), 255*img.transpose(1,2,0).astype('uint8'))
         if not self.tir_channel_expansion:
             if self.is_tir_signal:
-                img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to RGB by replication
+                if len(img.shape) == 2:
+                    img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to 3-ch if any RGB by replication
+                    print('Warning , TIR image should be 3dim by now (w,h,1)', 100*'*')
+                else:
+                    img = np.repeat(img.transpose(2, 0, 1), self.input_channels, axis=0)
             else:
                 # Convert
                 img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
@@ -874,23 +909,42 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 import matplotlib.pyplot as plt
                 plt.figure()
                 plt.hist(img.ravel(), bins=128)
-                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/outputs', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre_' +str(self.scaling_type)))
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/output', os.path.basename(self.img_files[index]).split('.')[0]+ 'pre_' +str(self.scaling_type)))
 
             # import tifffile
-            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_before_last_scaling.tiff'), img.transpose(1,2,0))
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded_before_scaling_' + '_' +str(str(img.max())) + '_' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+            #                  (img.transpose(1, 2, 0)))
+
+
             # In case moasaic of mixed PNG and TIFF the TIFF is pre scaled while the PNG shouldn;t
             if file_type != 'png':
+                img_orig, _, _ = load_image(self, index)
+                loaded_img_shape = img_orig.shape[:2]
+                new_shape = self.img_size
+                if isinstance(self.img_size, int): # if list then the 2d dim is embedded
+                    new_shape = (new_shape, new_shape)
+                if new_shape != loaded_img_shape:
+                    roi = loaded_img_shape
+                    img_size = new_shape
+                else: # don't do nothing normaliza the entire image
+                    roi = ()
+                    img_size = loaded_img_shape
+
+                    if self.rect:
+                        raise ValueError('not supported')
+
                 img = scaling_image(img, scaling_type=self.scaling_type,
-                                    percentile=self.percentile, beta=self.beta)
+                                    percentile=self.percentile, beta=self.beta,
+                                    roi=roi, img_size=img_size)
             else:
                 img = scaling_image(img, scaling_type='single_image_0_to_1') # safer in case double standartiozation one before mosaic and her the last one since mosaic is random based occurance
 
                 # print('ka')
             if 0:
                 import matplotlib.pyplot as plt
-                plt.figure()
+                # plt.figure()
                 plt.hist(img.ravel(), bins=128)
-                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/output', os.path.basename(self.img_files[index]).split('.')[0] + 'post_'+ str(self.scaling_type)))
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/output', os.path.basename(self.img_files[index]).split('.')[0] + '_hist_post_scaling_'+ str(self.scaling_type)))
                 # aa1 = np.repeat(img[1,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32')
                 # cv2.imwrite('test/exp40/test_batch88_labels__1.jpg', aa1*255)
                 # aa1 = np.repeat(img.transpose(1,2,0), 3, axis=2).astype('float32')
@@ -898,10 +952,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if np.isnan(img).any():
             print('img {} index : {} is nan fin'.format(self.img_files[index], index))
             # raise
-        # tag='png'
-        # import tifffile
-        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
-        #                  img.transpose(1, 2, 0))
+        # try:
+        #     tag='full_rect'
+        #     import tifffile
+        #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+        #                      (img.transpose(1, 2, 0)*2**16).astype('uint16'))
+        # except Exception as e:
+        #     print(f'\nfailed reading: due to {str(e)}')
+
         # #
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
@@ -1288,6 +1346,7 @@ def init_image_plane(self, img, s, n_div=2):
     else:
         img4 = np.full((s * n_div, s * n_div, img.shape[2]), img.mean(),
                        dtype=img.dtype)  # base image with 4 tiles fill with 0.5 in [0 1] equals to 114 in [0 255]
+    img4 = img4[:s*n_div, :s*n_div]  # in case rectangle shape, AR>1, than crop the padding plane according to the right final shape
     return img4
 
 
@@ -1382,8 +1441,9 @@ def replicate(img, labels):
     return img, labels
 
 
-def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleFill=False, scaleup=True, stride=32):
-    # Resize and pad image while meeting stride-multiple constraints
+def letterbox(img, new_shape=(640, 640), color=(114, 114, 114),
+              auto=True, scaleFill=False, scaleup=True, stride=32, random_pad=False):
+    # Resize and pad image while meeting stride-multiple constraints i.e. 32
     shape = img.shape[:2]  # current shape [height, width]
     if isinstance(new_shape, int):
         new_shape = (new_shape, new_shape)
@@ -1409,9 +1469,21 @@ def letterbox(img, new_shape=(640, 640), color=(114, 114, 114), auto=True, scale
 
     if shape[::-1] != new_unpad:  # resize
         img = cv2.resize(img, new_unpad, interpolation=cv2.INTER_LINEAR)
+
     top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
     left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+    if random_pad and dh>0: # recatangle image with padding is expected
+        img_plane = init_random_image_plane(img, s=max(img.shape), n_div=1)
+        # img_plane = img_plane[:img.shape[0], :img.shape[1]]  # in case rectangle shape, AR>1, than crop the padding plane according to the right final shape
+        img_plane[bottom:-top, :] = img
+        img = img_plane
+        # img[:bottom, :] = img_plane[:bottom, :]
+        # img[-top:, :] = img_plane[-top:, :]
+    else:
+        n_ch = img.shape[-1]
+        img = cv2.copyMakeBorder(img, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+        if n_ch == 1 and len(img.shape) == 2: # fixing bug in cv2 where n_ch==1 no explicit consideration
+            img = img[..., None]
     return img, ratio, (dw, dh)
 
 
@@ -1457,10 +1529,15 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
     if (border[0] != 0) or (border[1] != 0) or (M != np.eye(3)).any():  # image changed
         if is_fill_by_mean_img:
             filling_value = int(img.mean()+1) # filling value can be only an integer hance when scaling before mosaic signal is [0,1] then in the random perspective the posibilities for filling values are 0 or 1
+        n_ch = img.shape[-1]
+
         if perspective:
             img = cv2.warpPerspective(img, M, dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
         else:  # affine
             img = cv2.warpAffine(img, M[:2], dsize=(width, height), borderValue=(filling_value, filling_value, filling_value))
+
+        if n_ch == 1 and len(img.shape) == 2: # fixing bug in cv2 where n_ch==1 no explicit consideration
+            img = img[..., None]
 
         # import tifffile
         # unique_run_name = str(int(time.time_ns()))
@@ -1472,7 +1549,8 @@ def random_perspective(img, targets=(), segments=(), degrees=10, translate=.1, s
 
             pad_w = int((width - np.round(width * s)) // 2)
             pad_h = int((height - np.round(height * s)) // 2)
-            img_plane = init_random_image_plane(img, s=img.shape[0], n_div=1)
+            img_plane = init_random_image_plane(img, s=max(img.shape), n_div=1)
+            img_plane = img_plane[:img.shape[0], :img.shape[1]] # in case rectangle shape, AR>1, than crop the padding plane according to the right final shape
 
             if pad_w + int(T[0, 2] - width/2) >0:
                 # Left padding

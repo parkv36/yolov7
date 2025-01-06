@@ -321,7 +321,7 @@ def test(data,
         stats_person_medium = [np.concatenate(x, 0) for x in zip(*stats_person_medium)]  # to numpy
         stats_all_large = [np.concatenate(x, 0) for x in zip(*stats_all_large)]  # to numpy
 
-    if len(stats) and stats[0].any(): # P, R @  # max F1 index
+    if len(stats) and stats[0].any(): # P, R @  # max F1 index if any correct prediction
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
         if not training or 1:
             if bool(stats_person_medium):

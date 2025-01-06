@@ -57,10 +57,11 @@ if clear_ml:  # clearml support
 
     task = Task.init(
             project_name="TIR_OD",
-            task_name="train yolov7 with dummy test"
+            task_name="train yolov7 with dummy test"  # output_uri = True model torch.save will uploaded to file server or =/mnt/myfolder or AWS or Azure
         )
     # Task.execute_remotely() will invoke the job immidiately over the remote and not DeV
     task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
+#     clear_ml can capture graph like tensorboard
 
 gradient_clip_value = 100.0
 opt_gradient_clipping = True
@@ -417,7 +418,7 @@ def train(hyp, opt, device, tb_writer=None):
     # Start training
     t0 = time.time()
     if hyp['warmup_epochs'] !=0: # otherwise it is forced to 1000 iterations
-        nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
+        nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations) # HK@@ bad for overfitting test where few examples i.e itoo few iterations
     else:
         nw = 0
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
@@ -513,7 +514,6 @@ def train(hyp, opt, device, tb_writer=None):
                 if opt.quad:
                     loss *= 4.
 
-
             # HK TODO : https://discuss.pytorch.org/t/switching-between-mixed-precision-training-and-full-precision-training-after-training-is-started/132366/4    remove scaler backwards
             # Backward
             scaler.scale(loss).backward()
@@ -554,14 +554,14 @@ def train(hyp, opt, device, tb_writer=None):
                 # import tifffile
                 # for ix, img in enumerate(imgs):
                 #     print(ix, torch.std(img), torch.quantile(img, 0.5))
-                #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_scl_bef_mosaic' + str(ix)+'.tiff'),
+                #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/outputs', 'img_scl_bef_mosaic' + str(ix)+'.tiff'),
                 #                      img.cpu().numpy().transpose(1, 2, 0))
                 #
 
                 # Plot
                 if plots and ni < 100:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f, opt.input_channels), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(torch.jit.trace(model, imgs, strict=False), [])  # add model graph
@@ -811,6 +811,8 @@ if __name__ == '__main__':
         assert opt.batch_size % opt.world_size == 0, '--batch-size must be multiple of CUDA device count'
         opt.batch_size = opt.total_batch_size // opt.world_size
 
+    defualt_random_pad = True # lazy hyp def
+
     # clearml support
     if clear_ml: #clearml support
         config_file = task.connect_configuration(opt.hyp, name='hyperparameters_cfg')
@@ -825,7 +827,7 @@ if __name__ == '__main__':
     #defaults for backward compatible hyp files whree not set
     hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
     hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
-    hyp['random_pad'] = True # lazy hyp def
+    hyp['random_pad'] = hyp.get('random_pad', defualt_random_pad)
 
 
     # Train
@@ -957,7 +959,14 @@ FT : you need the --cfg of arch yaml because nc-classes are changing
 --workers 8 --device 0 --batch-size 16 --data data/tir_od.yaml --img 640 640 --weights ./yolov7/yolov7-tiny.pt --cfg cfg/training/yolov7-tiny.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug.yaml --adam --norm-type single_image_mean_std --input-channels 3 --linear-lr --epochs 2
 
 
---workers 8 --device 0 --batch-size 32 --data data/tir_od.yaml --img 640 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.2 --cache-images
+--workers 8 --device 0 --batch-size 32 --data data/tir_od_center_roi_aug_list.yaml --img-size 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.2 --cache-images
+
+Extended model for higher resolution
+# --workers 8 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size [768, 1024] --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 2 --gamma-aug-prob 0.3 --cache-images --rect
+# --workers 8 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 10 --gamma-aug-prob 0.3 --cache-images
+# --workers 1 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 10 --gamma-aug-prob 0.3 --cache-images
+
+--workers 8 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 150 --gamma-aug-prob 0.3 --cache-images --project runs/train_7e
 
 class EMA_Clip(EMA):
     #Exponential moving average

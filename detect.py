@@ -76,7 +76,7 @@ def detect(save_img=False):
     t0 = time.time()
     for path, img, im0s, vid_cap in dataset:
 
-        if os.path.basename(path).split('.')[1] == 'tiff':
+        if os.path.basename(path).split('.')[1] == 'tiff': # im0s only for plotting version
             im0s = np.repeat(im0s[ :, :, np.newaxis], 3, axis=2) # convert GL to RGB by replication
             im0s = scaling_image(im0s, scaling_type=opt.norm_type)
             if im0s.max()<=1:
@@ -214,7 +214,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
 
-    parser.add_argument('--input-channels', type=int, default=3, help='')
+    parser.add_argument('--input-channels', type=int, default=1, help='')
 
     parser.add_argument('--save-path', default='', help='save to project/name')
 
@@ -245,6 +245,11 @@ python -u ./yolov7/detect.py --weights ./yolov7/yolov7.pt --conf 0.25 --img-size
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_v20_Dec18_Test22C_20181127_223533_FS_210F_0001_5500_ROTEM_left_roi_220_4707.tiff
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_V50_OCT21_Test46A_ML_RD_IL_2021_08_05_14_48_05_FS_210_XGA_630_922_DENIS_right_roi_210_881.tiff
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR135_V80_JUL23_Test55A_SY_RD_US_2023_01_18_07_29_38_FS_50_XGA_0001_3562_Shahar_left_roi_50_1348.tiff
+
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/fog/28_02_2019_16_05_01[1]_04783.tiff
+
+
+
 
 YOLO model
 --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_od/Snipaste_2024-09-15_09-00-58_tir_135_TIR135_V80_JUL23_Test55A_SY_RD_US_2023_01_18_07_29_38_FS_50_XGA_0001_3562_Shahar_left_roi_50_1348.png

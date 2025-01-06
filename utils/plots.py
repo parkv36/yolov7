@@ -116,7 +116,7 @@ def output_to_target(output):
     return np.array(targets)
 
 
-def plot_images(images, targets, paths=None, fname='images.jpg', input_channels=3, names=None, max_size=640, max_subplots=16):
+def plot_images(images, targets, paths=None, fname='images.jpg', names=None, max_size=640, max_subplots=16):
     # Plot image grid with labels
 
     if isinstance(images, torch.Tensor):
@@ -150,8 +150,11 @@ def plot_images(images, targets, paths=None, fname='images.jpg', input_channels=
         block_y = int(h * (i % ns))
 
         img = img.transpose(1, 2, 0)
+        n_ch = img.shape[-1]
         if scale_factor < 1:
             img = cv2.resize(img, (w, h))
+            if n_ch == 1:
+                img = img[..., None]
 
         if img.shape[2] > 1: # GL no permute
             # Convert
