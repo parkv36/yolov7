@@ -202,7 +202,7 @@ def train(hyp, opt, device, tb_writer=None):
             v.requires_grad = False
 
     # Optimizer
-    nbs = 64  # nominal batch size
+    nbs = 64  # nominal batch size # HK gradient accumulation fixed size no less than
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
     logger.info(f"Scaled weight_decay = {hyp['weight_decay']}")
@@ -397,7 +397,7 @@ def train(hyp, opt, device, tb_writer=None):
                 model.half().float()  # pre-reduce anchor precision TODO HK Why ? >???!!!!
     if 1:
         print("opt.local_rank", opt.local_rank)
-        print("opt.local_rank", opt.local_rank)
+        print(100*'++')
     # DDP mode
     if cuda and rank != -1:
         model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank,
@@ -479,7 +479,7 @@ def train(hyp, opt, device, tb_writer=None):
         optimizer.zero_grad()
 
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
-            ni = i + nb * epoch  # number integrated batches (since train start)
+            ni = i + nb * epoch  # number integrated batches (since train start) i.e. iterations
             # imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0  @@HK TODO is that standartization ?
             imgs = imgs.to(device, non_blocking=True).float()
 
@@ -967,6 +967,13 @@ Extended model for higher resolution
 # --workers 1 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 10 --gamma-aug-prob 0.3 --cache-images
 
 --workers 8 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 150 --gamma-aug-prob 0.3 --cache-images --project runs/train_7e
+Overfit
+--workers 8 --device 0 --batch-size 8 --data data/tir_od_full_res_overfit.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res_OVERFITTING.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 150 --gamma-aug-prob 0.3 --cache-images --project runs/train_7e
+
+
+Overfit yolov7 to 1024x1024
+Trin yolov7 640 for 1024 
+--workers 2 --device 0 --batch-size 1 --data data/tir_od_full_res_overfit.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7.yaml --name yolov7 --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res_OVERFITTING.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 150 --gamma-aug-prob 0.3 --cache-images --project runs/train_7_1024
 
 class EMA_Clip(EMA):
     #Exponential moving average

@@ -35,3 +35,4 @@ beta : 0.3
 random_perspective : 1
 scaling_before_mosaic : 1
 gamma : 80   # percent 90 percente more stability to gamma
+random_pad: true

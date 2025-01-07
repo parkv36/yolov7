@@ -918,24 +918,14 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
             # In case moasaic of mixed PNG and TIFF the TIFF is pre scaled while the PNG shouldn;t
             if file_type != 'png':
-                img_orig, _, _ = load_image(self, index)
-                loaded_img_shape = img_orig.shape[:2]
-                new_shape = self.img_size
-                if isinstance(self.img_size, int): # if list then the 2d dim is embedded
-                    new_shape = (new_shape, new_shape)
-                if new_shape != loaded_img_shape:
-                    roi = loaded_img_shape
-                    img_size = new_shape
-                else: # don't do nothing normaliza the entire image
-                    roi = ()
-                    img_size = loaded_img_shape
 
-                    if self.rect:
-                        raise ValueError('not supported')
+                # img_size, roi = self.rectangle_res_roi(index)  # HK tried to normalize the image according to the real roi inside the square
+                # img = scaling_image(img, scaling_type=self.scaling_type,
+                #                     percentile=self.percentile, beta=self.beta,
+                #                     roi=roi, img_size=img_size)
 
                 img = scaling_image(img, scaling_type=self.scaling_type,
-                                    percentile=self.percentile, beta=self.beta,
-                                    roi=roi, img_size=img_size)
+                                    percentile=self.percentile, beta=self.beta)
             else:
                 img = scaling_image(img, scaling_type='single_image_0_to_1') # safer in case double standartiozation one before mosaic and her the last one since mosaic is random based occurance
 
@@ -964,6 +954,23 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img = np.ascontiguousarray(img)
         # print('\n 2nd', img.shape)
         return torch.from_numpy(img), labels_out, self.img_files[index], shapes
+
+    def rectangle_res_roi(self, index):
+        img_orig, _, _ = load_image(self, index)
+        loaded_img_shape = img_orig.shape[:2]
+        new_shape = self.img_size
+        if isinstance(self.img_size, int):  # if list then the 2d dim is embedded
+            new_shape = (new_shape, new_shape)
+        if new_shape != loaded_img_shape:
+            roi = loaded_img_shape
+            img_size = new_shape
+        else:  # don't do nothing normaliza the entire image
+            roi = ()
+            img_size = loaded_img_shape
+        if self.rect:
+            raise ValueError('not supported')
+        return img_size, roi
+
     # Labels : When it comes to annotations, YOLOv8 uses relative coordinates rather than absolute pixel values for the
     # bounding box positions. This means that the labels are in the range of 0 to 1 relative to the image width and height.
     # Consequently, these labels will remain consistent regardless of image resizing. Hence, you do not need to change,
