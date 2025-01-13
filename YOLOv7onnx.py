@@ -12,13 +12,16 @@ import numpy as np
 import onnxruntime as ort
 from PIL import Image
 import argparse
-
 from utils.datasets import create_dataloader, create_folder
+
+from utils.datasets import LoadStreams, LoadImages, scaling_image
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
 from utils.metrics import ap_per_class
 from utils.general import box_iou
+from utils.plots import plot_one_box
+
 import os
 from utils.general import xywh2xyxy
 from collections import defaultdict
@@ -78,7 +81,7 @@ def compute_precision_recall_ap(preds, gts, iou_threshold=0.5):
     return precision, recall, ap, np.array(thresholds)
 
 # Compute mAP and plot precision-recall curve
-def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf_th=-1):
+def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf_th=-1, min_precision_acceptible = 0.9):
     aps = []
     plt.figure(figsize=(10, 7))
 
@@ -93,11 +96,11 @@ def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf
         aps.append(ap)
         if 1:
             plt.plot(recall, precision, label=f"Class {cls} (AP={ap:.2f})")
-            min_precision_acceptible = 0.9
-            inds = [i for i in range(0, np.where(precision < min_precision_acceptible)[0][0].item())]
+
+            inds = [i for i in range(0, np.where(precision < min_precision_acceptible)[0][-1].item())]
             print('Pr, Re Th')
             [(precision[i], recall[i], thresholds[i]) for i in inds]
-            for i in range(0, np.where(precision < min_precision_acceptible)[0][0].item(), int(len(inds)/20)):
+            for i in range(0, np.where(precision < min_precision_acceptible)[0][-1].item(), int(len(inds)/20)):
                 print('Th {:.2f}, Pr {:.2f}, Re {:.2f}'.format(thresholds[i], 100*precision[i], 100*recall[i]))
                 plt.annotate(f'{thresholds[i]:.2f}',
                              xy=(recall[i], precision[i]),
@@ -137,8 +140,8 @@ coco_lass_names = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 
          'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
          'hair drier', 'toothbrush']
 
-test_vectors_test = False
 reshape = False
+
 def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleup=True, stride=32):
     # Resize and pad image while meeting stride-multiple constraints
     shape = im.shape[:2]  # current shape [height, width]
@@ -170,7 +173,7 @@ def letterbox(im, new_shape=(640, 640), color=(114, 114, 114), auto=True, scaleu
 def main(opt):
 
     create_folder(opt.save_path)
-
+    colors = [[random.randint(0, 255) for _ in range(3)] for _ in coco_lass_names[:10]]
     pred_tgt_acm = list()
     p_r_iou = 0.5
     niou = 1
@@ -193,8 +196,11 @@ def main(opt):
     # sess = ort.InferenceSession(onnx_file, sess_options, providers=["CPUExecutionProvider"])
 
 
-    test_path = '/home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt'
-    imgsz_test = opt.img_size #512 #(512, 512, 3)
+    test_path = opt.test_files_path
+    # imgsz_test = opt.img_size #512 #(512, 512, 3)
+    if opt.img_size>-1 and bool(input_shape):
+        print('!!!!!!!!!!!!!!!!  model has input size defined in ONNX  overrideen  ? ')
+    imgsz_test = np.unique([x for x in input_shape if x >1])[0].item()
     # dataset_image_size = [640, 640]
     batch_size = 16
     gs = 32 #gs = max(int(model.stride.max()), 32)
@@ -216,26 +222,37 @@ def main(opt):
     hyp['copy_paste'] = False
     nc = 2
 
-    images_parent_folder = '/mnt/Data/hanoch/tir_frames_rois/yolo7_tir_data_all'
+    images_parent_folder = opt.images_parent_folder
 
     print(colorstr('val: '))
     opt.single_cls = False
     opt.input_channels = 1
     opt.tir_channel_expansion = False
     opt.no_tir_signal = False
-    dataloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt,  # testloader
-                                                 hyp=hyp, cache=opt.cache_images, rect=False, rank=-1,
-                                                 # @@@ rect was True why?
-                                                 world_size=1, workers=8,
-                                                 pad=0.5, prefix=colorstr('val: '),
-                                                 rel_path_images=images_parent_folder, num_cls=nc)[0]
+
+    if opt.detection_no_gt:
+        dataloader = LoadImages(images_parent_folder, img_size=imgsz_test, stride=32,
+                             scaling_type=opt.norm_type, input_channels=opt.input_channels,
+                             no_tir_signal=opt.no_tir_signal,
+                             tir_channel_expansion=opt.tir_channel_expansion)
+    else:
+        dataloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt,  # testloader
+                                                     hyp=hyp, cache=opt.cache_images, rect=False, rank=-1,
+                                                     # @@@ rect was True why?
+                                                     world_size=1, workers=8,
+                                                     pad=0.5, prefix=colorstr('val: '),
+                                                     rel_path_images=images_parent_folder, num_cls=nc)[0]
 
     seen = 0
     t0 = 0
 
     test_vector_image_resolution = [768, 1024]
-    test_vector_ref_detections = { 'BBox': [383.031, 248.378, 39.7324, 87.0982], 'Score': 0.982154, 'Class': 'Person', 'crop_coordination_xy':[256, 128], 'tol_box':0.1, 'tol_conf':0.2}
     test_image = '/mnt/Data/hanoch/tir_old_tf/ODFrame_prod_onnx_tir_v1_tf_test_vector.png'
+    test_vector_ref_detections = { 'BBox': [383.031, 248.378, 39.7324, 87.0982], 'Score': 0.982154,
+                                   'Class': 'Person', 'crop_coordination_xy':[256, 128],
+                                   'tol_box':0.1, 'tol_conf':0.2, 'detection_threshold': 0.8,
+                                   'test_image': test_image}
+
 
     det_threshold = opt.conf_thres
     nms_ious_th = opt.iou_thres
@@ -245,8 +262,14 @@ def main(opt):
     stats = []
     seen = 0
     names = ['car', 'person']
+
+    test_vectors_test = opt.test_vectors_test_old_tir_1p5
     # Batchwise
     for img, targets, paths, shapes in tqdm(dataloader):
+        if bool(opt.detection_no_gt):
+            paths, img, im0s, _ = img, targets, paths, shapes
+            del targets
+            img = torch.from_numpy(img[None, ...]).to(opt.device)
         img = img.cpu().numpy().astype('float32').transpose(0, 2,3,1) # channel last
         nb, _, height, width = img.shape  # batch size, channels, height, width
         seen += 1
@@ -279,7 +302,7 @@ def main(opt):
                         im = im.astype('float32')
                 else:
                     if opt.norm_type == 'no_norm': # old TIR model given dataloader not test vector
-                        im = im /(2**16 -1)
+                        # im = im /(2**16 -1)
                         im = im.astype('float32')
                     else:
                         im = im.astype('float32') # New TIR model with specific normalization
@@ -300,6 +323,11 @@ def main(opt):
                     bboxes = nn_out[scores_above_th, 1:5]
                     ml_class_id = nn_out[scores_above_th, 5].astype('int')
                 else:
+
+                    det_threshold = test_vector_ref_detections['detection_threshold']
+                    if opt.conf_thres != det_threshold:
+                        det_threshold = opt.conf_thres
+                        # print('User changed ONNX old version threshold !!!!!!!!!!!!!!!! ', 10*'!!!#33')
                     bbox_out = output[1]
                     class_id = np.argmax(sigmoid_out, 2)
                     scores = np.max(sigmoid_out, 2)
@@ -423,15 +451,37 @@ def main(opt):
                                           iou_threshold=nms_ious_th)
                     preds = [(bboxes_normalized_coord_detected_2_nms[x].numpy(), ml_class_id[x].item(), scores_above_th[x].item()) for x in nms_out]
                     predictions.extend(preds)
+                    if not bool(opt.detection_no_gt): # no GT in detectons noly
+                        img_gt_lbls = targets[targets[:, 0] == ix, 1].cpu().numpy()
+                        img_gt_lbls_in_coco_order = [coco_mapping[ele.item()] for ele in img_gt_lbls]
+                        img_gt_boxes = targets[targets[:, 0] == ix, 2:] # YOLO bbox are relative coordination (center x,y and w,h ) hence resolution independant
+                        img_gt_boxes_xyxy = [yolobbox_to_xyxy(*yolo_bb, imgsz_test, imgsz_test) for yolo_bb in img_gt_boxes]
+                        # img_gt_boxes_xywh = [[x[0], x[1],x[2]-x[0], x[3]-x[1]] for x in img_gt_boxes_xyxy]
 
-                    img_gt_lbls = targets[targets[:, 0] == ix, 1].cpu().numpy()
-                    img_gt_lbls_in_coco_order = [coco_mapping[ele.item()] for ele in img_gt_lbls]
-                    img_gt_boxes = targets[targets[:, 0] == ix, 2:] # YOLO bbox are relative coordination (center x,y and w,h ) hence resolution independant
-                    img_gt_boxes_xyxy = [yolobbox_to_xyxy(*yolo_bb, imgsz_test, imgsz_test) for yolo_bb in img_gt_boxes]
-                    # img_gt_boxes_xywh = [[x[0], x[1],x[2]-x[0], x[3]-x[1]] for x in img_gt_boxes_xyxy]
+                        # Ground truths: [(bbox, class_id)]
+                        ground_truths.extend([(x, y) for x, y in zip (img_gt_boxes_xyxy, img_gt_lbls_in_coco_order)])
+                    else:
+                        save_fname = paths.split('/')[-1].split('.')[0] + '_'+ str(getattr(dataloader, 'frame', 0)) + '.png'  # img.jpg
 
-                    # Ground truths: [(bbox, class_id)]
-                    ground_truths.extend([(x, y) for x, y in zip (img_gt_boxes_xyxy, img_gt_lbls_in_coco_order)])
+                        im0s = letterbox(im0s, imgsz_test, 32)[0] # reshpae presentation image for debug
+                        im0s = np.repeat(im0s[:, :, np.newaxis], 3, axis=2)  # convert GL to RGB by replication
+                        im0s = scaling_image(im0s, scaling_type='single_image_percentile_0_1')
+                        if im0s.max() <= 1:
+                            im0s = im0s * 255
+
+                        if scores.max() > 0.2:
+                            print('ka')
+                        for i, det in enumerate(preds):  # detections per image
+                            xyxy, cls, conf = det
+                            label = f'{coco_lass_names[int(cls)]} {conf:.2f}'
+                            if isinstance(xyxy, list):
+                                xyxy = xyxy[0]
+                            plot_one_box(xyxy, im0s, label=label, color=colors[int(cls)], line_thickness=1)
+                            save_path = os.path.join(opt.save_path, save_fname)
+                            cv2.imwrite(save_path, im0s)
+                        else:
+                            print(scores.max())
+
             t0 += time_synchronized() - t
             # out coco 80 classes : [1, 25200, 85] [batch, proposals_3_scales,4_box__coord+1_obj_score + n x classes]
             # Compute loss
@@ -455,7 +505,7 @@ def main(opt):
 
         # map = compute_map(predictions, ground_truths, num_classes=2, iou_threshold=0.5, conf_th=det_threshold)
     else:
-        map = compute_map(predictions, ground_truths, num_classes=3, iou_threshold=0.5, conf_th=det_threshold)
+        map = compute_map(predictions, ground_truths, num_classes=3, iou_threshold=0.5, conf_th=det_threshold, min_precision_acceptible=0.9)
     print(f"mAP: {map:.2f}")
 
     return
@@ -469,17 +519,26 @@ if __name__ == '__main__':
     parser.add_argument('--cache-images', action='store_true', help='cache images for faster training')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--weights', nargs='+', type=str, default='yolov7.pt', help='model.pt path(s)')
-    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
+    parser.add_argument('--img-size', type=int, default=-1, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.001, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.6, help='IOU threshold for NMS')
     parser.add_argument('--oldmodel', action='store_true', help='augmented inference')
     parser.add_argument('--norm-type', type=str, default='standardization',
                                         choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
-                                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
+                                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1', 'no_norm'],
                                         help='Normalization approach')
 
     parser.add_argument('--save-path', default='', help='save to project/name')
+    parser.add_argument('--test-files-path', type=str, default='/home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt', help='')
 
+    parser.add_argument('--detection-no-gt', action='store_true', help='')
+
+    parser.add_argument('--images-parent-folder', type=str, default='/mnt/Data/hanoch/tir_frames_rois/yolo7_tir_data_all', help='')  # in case --detection-no-gt
+
+
+    parser.add_argument('--test-vectors-test-old-tir-1p5', action='store_true', help='') # based on CPP test vector
+
+    # --test-path   '/home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set_part.txt'  'Test51a_Test40A_test_set_part.txt'
 
     opt = parser.parse_args()
 
@@ -490,4 +549,10 @@ if __name__ == '__main__':
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm
          '/mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx'   # old TIR model
 
+    --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5
+    
+    DEtections only 
+    --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt
+    Reducing th = 0.2
+    --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.2  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt
     """

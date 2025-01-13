@@ -898,7 +898,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             if self.is_tir_signal:
                 if len(img.shape) == 2:
                     img = np.repeat(img[np.newaxis, :, :], self.input_channels, axis=0) #convert GL to 3-ch if any RGB by replication
-                    print('Warning , TIR image should be 3dim by now (w,h,1)', 100*'*')
+                    # print('Warning , TIR image should be 3dim by now (w,h,1)', 100*'*')
                 else:
                     img = np.repeat(img.transpose(2, 0, 1), self.input_channels, axis=0)
             else:
