@@ -336,7 +336,7 @@ def test(data,
                     # eval([x for x in sensor_type_vars if str(sensor_type) in x][0]).append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
                     # obj_range_m = object_size_to_range(obj_height_pixels=h, focal=sensor_type)
                     obj_range_m = torch.tensor([(object_size_to_range(obj_height_pixels=(np.sqrt(h.cpu()*w.cpu())), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4]))])
-                    gt_range = [(object_size_to_range(obj_height_pixels=(np.sqrt(h*w)), focal=210)) for ix, (x, y, w, h) in enumerate(labels[:,1:5].cpu())]
+                    gt_range = [(object_size_to_range(obj_height_pixels=(np.sqrt(h*w)), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(labels[:,1:5].cpu())]
                     gt_range = [_range//100 for _range in gt_range]
                     for gt_lbl, rng_100 in zip(labels[:,0], gt_range):
                         if rng_100 < n_bins_of100m :
@@ -556,6 +556,66 @@ def test(data,
     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
 
 
+def sensor_type_breakdown_kpi(gt_per_range_bins, n_bins_of100m, names, nc, plots, range_bins_map, range_bins_support,
+                              save_dir, sensor_type_vars, v5_metric, **kwargs):
+    for sensor_type in sensor_type_vars:
+        if bool(eval(sensor_type)):
+            exec("nt_{} = np.bincount({}[3].astype(np.int64), minlength={})".format(sensor_type, sensor_type, nc))
+
+            exec(
+                "p_{}, r_{}, ap_{}, f1_{}, ap_class_{} = ap_per_class(*{}, plot={}, v5_metric={}, save_dir={}, names={}, tag={}, class_support=nt_{})".format(
+                    sensor_type,
+                    sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, plots, v5_metric, 'str(save_dir)',
+                    names, 'str(sensor_type)', sensor_type))
+
+            exec("ap50_{}, ap_{} = ap_{}[:, 0], ap_{}.mean(1)".format(sensor_type, sensor_type, sensor_type,
+                                                                      sensor_type))
+            exec("mp_{}, mr_{}, map50_{}, map_{} = p_{}.mean(), r_{}.mean(), ap50_{}.mean(), ap_{}.mean()".format(
+                sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, sensor_type))
+
+            sensor_focal = int(sensor_type.split('_')[-1])
+            if 1:  # sensor_focal > 100: # ML
+                exec('ranges={}_with_range[-1]//100'.format(sensor_type))
+                for rng_100 in range(0, n_bins_of100m):
+                    # ind = np.array([])
+                    # exec('ind = np.where(ranges == rng_100)[0]')
+                    ind = eval('np.where(ranges == rng_100)[0]')
+                    stat_list_per_range = list()
+                    if ind.any():  # if there were detections at that range bin
+                        for ele in range(
+                                3):  # taking the relevant preds related to the distance bin, since P/R/AP are computed globally vs. all GT/targets then it is compared to all targets
+                            stat_list_per_range.append(eval(sensor_type)[ele][ind])
+                        # GT at thta bin range
+                        if not bool(
+                                gt_per_range_bins[sensor_focal][rng_100]):  # predictions but no GT => FP=>low Prcesion
+                            map50_per_range = np.array(0)
+                            nt_stat_list_per_range = np.array(0)
+                        else:
+                            stat_list_per_range.append(np.array(
+                                [x for x in gt_per_range_bins[sensor_focal][rng_100]]))  # add all targets/labels
+                            nt_stat_list_per_range = np.bincount(stat_list_per_range[3].astype(np.int64), minlength=nc)
+
+                            p_stat_list_per_range, r_stat_list_per_range, ap_stat_list_per_range, f1_stat_list_per_range, \
+                                ap_class_stat_list_per_range = ap_per_class(*stat_list_per_range, plot=plots,
+                                                                            v5_metric=v5_metric,
+                                                                            save_dir='', names=names, tag='',
+                                                                            class_support=nt_stat_list_per_range)
+
+                            ap50_per_range, ap_per_range = ap_stat_list_per_range[:, 0], ap_stat_list_per_range.mean(
+                                1)  # AP@0.5, AP@0.5:0.95
+                            mp_per_range, mr_per_range, map50_per_range, map_per_range = p_stat_list_per_range.mean(), r_stat_list_per_range.mean(), ap50_per_range.mean(), ap_per_range.mean()
+                    else:  # no prediction at this range
+                        if not bool(gt_per_range_bins[sensor_focal][rng_100]):  # there are GT but no pred
+                            nt_stat_list_per_range = np.array(0)
+                            fn = len(gt_per_range_bins[sensor_focal][rng_100])
+                            recall = 0  # no TP 0/TP+FN
+                            precision = 0
+                            map50_per_range = np.array(0)
+                    print(map50_per_range)
+                    range_bins_map[sensor_focal][rng_100] = map50_per_range.item()
+                    range_bins_support[sensor_focal][rng_100] = nt_stat_list_per_range.sum().item()
+    range_bar_plot(n_bins=17, range_bins=range_bins_map, save_dir=save_dir, range_bins_support=range_bins_support)
+    # for time_var in time_vars:
 
 
 if __name__ == '__main__':

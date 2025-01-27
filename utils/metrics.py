@@ -192,26 +192,31 @@ class ConfusionMatrix:
 
 
 # Plots ----------------------------------------------------------------------------------------------------------------
-def range_bar_plot(n_bins_of100m, range_bins, save_dir, bar_width = 50, range_bins_support={}):
+def range_bar_plot(n_bins, range_bins, save_dir, bar_width = 25, range_bins_support={}):
 
-    x = 100 * np.arange(n_bins_of100m)
+    x = 100 * np.arange(n_bins) + 100
+    if 0:
+        x= x/100
     for k, v in range_bins.items():
         plt.figure()
-        bar1 = plt.bar(x - bar_width / 2, v, bar_width, label='mAP',
-                color='skyblue')
+        bar1 = plt.bar(x , v[:n_bins], bar_width, color='skyblue')
+        x_positions = np.arange(len(v))
+        # plt.xticks(x_positions, v)
+        if 1:
+            plt.xticks(x, (x/100).astype('int'))
         if bool(range_bins_support):
             for ix, rect in enumerate(bar1):
                 height = rect.get_height()
                 plt.text(rect.get_x() + rect.get_width() / 2.0, height, f'{range_bins_support[k][ix]:.0f}', ha='center', va='bottom')
 
-        plt.legend()
-        plt.tight_layout()
+        # plt.legend()
+        # plt.tight_layout()
         # plt.ylim([0.0, 1.05])
         plt.ylabel('mAP')
-        plt.xlabel('Range[m]')
+        plt.xlabel('Range[x100m]')
         plt.grid()
-        plt.title('Sensor {}mm mAP vs. range[m]'.format(k))
-        plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+        plt.title('Sensor {}mm mAP vs. range[x100m]'.format(k))
+        # plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
         plt.savefig(os.path.join(save_dir, 'mAP_distribution_distance_sensor_' + str(k) + '.png'), dpi=250)
         plt.clf()
         plt.close()
