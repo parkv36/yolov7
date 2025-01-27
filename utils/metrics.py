@@ -14,8 +14,10 @@ def fitness(x):
     w = [0.0, 0.0, 0.1, 0.9]  # weights for [P, R, mAP@0.5, mAP@0.5:0.95]
     return (x[:, :4] * w).sum(1)
 
+from pathlib import PosixPath
 
-def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False, save_dir='.', names=(), tag=''):
+def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False,
+                 save_dir='.', names=(), tag='', class_support:np.ndarray=np.array([])):
     """ Compute the average precision, given the recall and precision curves.
     Source: https://github.com/rafaelpadilla/Object-Detection-Metrics.
     # Arguments
@@ -28,6 +30,8 @@ def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False, sa
     # Returns
         The average precision as computed in py-faster-rcnn.
     """
+    if not isinstance(save_dir, PosixPath):
+        save_dir = Path(save_dir)
 
     # Sort by objectness
     i = np.argsort(-conf)
@@ -70,7 +74,8 @@ def ap_per_class(tp, conf, pred_cls, target_cls, v5_metric=False, plot=False, sa
     f1 = 2 * p * r / (p + r + 1e-16)
     if plot:
         if bool(py):
-            plot_pr_curve(px, py, ap, Path(os.path.join(save_dir, 'PR_curve_' + tag + '.png')), names)
+            plot_pr_curve(px, py, ap, Path(os.path.join(save_dir, 'PR_curve_' + tag + '.png')),
+                          names=names, class_support=class_support)
         plot_mc_curve(px, f1, Path(os.path.join(save_dir, 'F1_curve_' + tag + '.png')), ylabel='F1')
         plot_mc_curve(px, p, Path(os.path.join(save_dir, 'P_curve_' + tag + '.png')), ylabel='Precision')
         plot_mc_curve(px, p, Path(os.path.join(save_dir, 'R_curve_' + tag + '.png')), ylabel='Recall')
@@ -187,9 +192,35 @@ class ConfusionMatrix:
 
 
 # Plots ----------------------------------------------------------------------------------------------------------------
+def range_bar_plot(n_bins_of100m, range_bins, save_dir, bar_width = 50, range_bins_support={}):
 
-def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_interest=[0.95, 0.9, 0.85]):
+    x = 100 * np.arange(n_bins_of100m)
+    for k, v in range_bins.items():
+        plt.figure()
+        bar1 = plt.bar(x - bar_width / 2, v, bar_width, label='mAP',
+                color='skyblue')
+        if bool(range_bins_support):
+            for ix, rect in enumerate(bar1):
+                height = rect.get_height()
+                plt.text(rect.get_x() + rect.get_width() / 2.0, height, f'{range_bins_support[k][ix]:.0f}', ha='center', va='bottom')
 
+        plt.legend()
+        plt.tight_layout()
+        # plt.ylim([0.0, 1.05])
+        plt.ylabel('mAP')
+        plt.xlabel('Range[m]')
+        plt.grid()
+        plt.title('Sensor {}mm mAP vs. range[m]'.format(k))
+        plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+        plt.savefig(os.path.join(save_dir, 'mAP_distribution_distance_sensor_' + str(k) + '.png'), dpi=250)
+        plt.clf()
+        plt.close()
+
+def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(),
+                  precisions_of_interest=[0.95, 0.9, 0.85],
+                  class_support:np.ndarray=np.array([])):
+
+    tag = str(save_dir).split('/')[-1].split('.')[0].split('PR_curve_stats_all_')[-1]
     # Precision-recall curve
     fig, ax = plt.subplots(1, 1, figsize=(9, 6), tight_layout=True)
     py = np.stack(py, axis=1)
@@ -206,7 +237,10 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
                 print(e)
                 print(precisions_of_interest)
 
-            ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f}')  # plot(recall, precision)
+            if class_support.any():
+                ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f} ({class_support[i]})')  # plot(recall, precision)
+            else:
+                ax.plot(px, y, linewidth=1, label=f'{names[i]} {ap[i, 0]:.3f}')  # plot(recall, precision)
             ax.plot(recall_of_interest_per_class, precisions_of_interest, '*', color='green')
             for k in range(len(precisions_of_interest)):
                 ax.plot(recall_of_interest_per_class[k], precisions_of_interest[k], '*', color='green')
@@ -244,6 +278,7 @@ def plot_pr_curve(px, py, ap, save_dir='pr_curve.png', names=(), precisions_of_i
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.grid()
+    ax.set_title(tag)
     plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
     fig.savefig(Path(save_dir), dpi=250)
 

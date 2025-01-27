@@ -31,18 +31,27 @@ from torchvision.utils import save_image
 from torchvision.ops import roi_pool, roi_align, ps_roi_pool, ps_roi_align
 
 from utils.general import check_requirements, xyxy2xywh, xywh2xyxy, xywhn2xyxy, xyn2xy, segment2box, segments2boxes, \
-    resample_segments, clean_str
+    resample_segments, clean_str, check_file
 from utils.torch_utils import torch_distributed_zero_first
 # @@HK :  pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 resolve h\lib\fbgemm.dll" or one of its dependencies on Windows
 # Parameters
 eps = 1e-5
-
+import pandas as pd
 def flatten(lst): return [x for l in lst for x in l]
 
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
 vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
 logger = logging.getLogger(__name__)
+
+def load_csv_xls_2_df(eileen_annot, index_col=False):
+    filename, file_extension = os.path.splitext(eileen_annot)
+    if file_extension == '.csv':
+        df_eilen = pd.read_csv(eileen_annot, index_col=index_col)
+    elif file_extension == '.xlsx':
+        df_eilen = pd.read_excel(eileen_annot, index_col=index_col, engine='openpyxl')
+
+    return df_eilen
 
 # Get orientation exif tag
 for orientation in ExifTags.TAGS.keys():
@@ -174,7 +183,8 @@ def create_dataloader(path, imgsz, batch_size, stride, opt, hyp=None, augment=Fa
                                       num_cls=num_cls,
                                       tir_channel_expansion=opt.tir_channel_expansion,
                                       no_tir_signal=opt.no_tir_signal,
-                                      scaling_before_mosaic=scaling_before_mosaic)
+                                      scaling_before_mosaic=scaling_before_mosaic,
+                                      csv_metadata_path=opt.csv_metadata_path)
 
     batch_size = min(batch_size, len(dataset))
     nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
@@ -519,7 +529,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
                  cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
                  scaling_type='standardization', input_channels=3,
-                 num_cls=-1, tir_channel_expansion=False, no_tir_signal=False, scaling_before_mosaic=False):
+                 num_cls=-1, tir_channel_expansion=False, no_tir_signal=False, scaling_before_mosaic=False,
+                 csv_metadata_path=''):
 
         self.scaling_before_mosaic = scaling_before_mosaic
         self.img_size = img_size
@@ -538,6 +549,11 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.tir_channel_expansion = tir_channel_expansion
         self.is_tir_signal = not (no_tir_signal)
         self.random_pad = hyp['random_pad']
+
+        self.use_csv_meta_data_file = False
+        if bool(csv_metadata_path):
+            self.csv_meta_data_file = check_file(csv_metadata_path)
+            self.use_csv_meta_data_file = True
 
         if self.hyp['copy_paste'] >0 and self.random_pad:
             raise ValueError('copy_paste and random_pad are mutually exclusive. not supported yet!!')
@@ -658,6 +674,24 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 pbar.desc = f'{prefix}Caching images ({gb / 1E9:.1f}GB)'
             pbar.close()
 
+        if self.use_csv_meta_data_file:
+            df = load_csv_xls_2_df(self.csv_meta_data_file)
+            self.df_metadata = pd.DataFrame(columns=['sensor_type', 'part_in_day', 'weather_condition', 'country', 'train_state', 'tir_frame_image_file_name'])
+            for ix, fname in enumerate(self.img_files):
+                file_name = fname.split('/')[-1]
+                if not (df['tir_frame_image_file_name'] == file_name).any():
+                        print('File name {} metadata hasnt found !!!'. format(file_name))
+                self.df_metadata.loc[len(self.df_metadata)] = [df[df['tir_frame_image_file_name'] == file_name]['sensor_type'].item(),
+                                                     df[df['tir_frame_image_file_name'] == file_name]['part_in_day'].item(),
+                                                     df[df['tir_frame_image_file_name'] == file_name]['weather_condition'].item(),
+                                                     df[df['tir_frame_image_file_name'] == file_name]['country'].item(),
+                                                     df[df['tir_frame_image_file_name'] == file_name]['train_state'].item(),
+                                                     df[df['tir_frame_image_file_name'] == file_name]['tir_frame_image_file_name'].item()]
+
+
+
+
+
     def cache_labels(self, num_cls, path=Path('./labels.cache'), prefix=''):
         # Cache dataset labels, check images and read shapes
         x = {}  # dict
@@ -688,9 +722,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                         assert (l >= 0).all(), 'negative labels'
                         assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
                         assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
-                        assert (l[:, 0].max() < num_cls), 'class label out of range -- invalid' # max label can't be greater than num of labels
-                        # print(l[:, 0])
-
+                        l = np.array([lbl for lbl in l if lbl[0] < num_cls]) # take only labels index upto num of classes and omit others
+                        # assert if (l[:, 0].max() < num_cls), 'class label out of range -- invalid' # max label can't be greater than num of labels
 
                     else:
                         ne += 1  # label empty
@@ -715,6 +748,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         x['version'] = 0.1  # cache version
         torch.save(x, path)  # save for next time
         logging.info(f'{prefix}New cache created: {path}')
+
+
         return x
 
     def __len__(self):
@@ -1010,6 +1045,292 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             l[:, 0] = i  # add target image index for build_targets()
 
         return torch.stack(img4, 0), torch.cat(label4, 0), path4, shapes4
+
+class LoadImagesAddingNoiseAndLabels(LoadImagesAndLabels):  # for training/testing
+    def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,
+                 cache_images=False, single_cls=False, stride=32, pad=0.0, prefix='', rel_path_images='',
+                 scaling_type='standardization', input_channels=3,
+                 num_cls=-1, tir_channel_expansion=False, no_tir_signal=False, scaling_before_mosaic=False,
+                 path_noisy_samples=''):
+
+        super(LoadImagesAddingNoiseAndLabels, self).__init__(path, img_size=img_size, batch_size=batch_size, augment=augment, hyp=hyp,
+                                                             rect=rect, image_weights=image_weights,
+                                                         cache_images=cache_images, single_cls=single_cls, stride=stride, pad=pad, prefix=prefix, rel_path_images=rel_path_images,
+                                                         scaling_type=scaling_type, input_channels=input_channels,
+                                                         num_cls=-1, tir_channel_expansion=tir_channel_expansion, no_tir_signal=no_tir_signal, scaling_before_mosaic=scaling_before_mosaic)
+        self.path_noisy_samples=path_noisy_samples
+
+        self.noise_filenames = [os.path.join(self.path_noisy_samples, x) for x in os.listdir(self.path_noisy_samples)
+                     if x.endswith('tiff')]
+
+        self.recorded_noise = False
+    def __getitem__(self, index):
+        index = self.indices[index]  # linear, shuffled, or image_weights
+
+        file_type = os.path.basename(self.img_files[index]).split('.')[-1].lower()
+
+        if (file_type != 'tiff' and file_type != 'png'):
+            print('!!!!!!!!!!!!!!!!  index : {}  {} unrecognized '.format(index, self.img_files[index]))
+
+        if self.is_tir_signal:
+            if self.scaling_before_mosaic:
+                filling_value = 0.5  # on borders or after perspective  fill with 0.5 in [0 1] equals to 114 in [0 255]
+            else:
+                filling_value = 0  # on borders or after perspective better to have 0 thermal profile  uint16 based on the DR of the image which is unknown TODO: better find an elegent way
+        else:
+            filling_value = 114
+
+        hyp = self.hyp
+        mosaic = self.mosaic and random.random() < hyp['mosaic'] and not (self.tir_channel_expansion)
+        if mosaic:
+            # Load mosaic
+            if random.random() < 0.8:
+                img, labels = load_mosaic(self, index, filling_value=filling_value, file_type=file_type)
+            else:
+                img, labels = load_mosaic9(self, index, filling_value=filling_value, file_type=file_type)
+            shapes = None
+
+            # MixUp https://arxiv.org/pdf/1710.09412.pdf
+            if random.random() < hyp['mixup']:
+                if random.random() < 0.8:
+                    img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1),
+                                                filling_value=filling_value, file_type=file_type)
+                else:
+                    img2, labels2 = load_mosaic9(self, random.randint(0, len(self.labels) - 1),
+                                                 filling_value=filling_value, file_type=file_type)
+                r = np.random.beta(8.0, 8.0)  # mixup ratio, alpha=beta=8.0
+                img = (img * r + img2 * (1 - r)).astype(img.dtype)  # .astype(np.uint8)
+                labels = np.concatenate((labels, labels2), 0)
+
+
+        else:
+            # Load image
+            img, (h0, w0), (h, w) = load_image(self, index)
+
+            # Letterbox
+            shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+            # img, ratio, pad = letterbox(img, shape, color=(img.mean(), img.mean(), img.mean()), auto=False, scaleup=self.augment)
+            img, ratio, pad = letterbox(img, shape, auto=False, scaleup=self.augment, random_pad=self.random_pad)
+
+            shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
+
+            labels = self.labels[index].copy()
+            if labels.size:  # normalized xywh to pixel xyxy format
+                labels[:, 1:] = xywhn2xyxy(labels[:, 1:], ratio[0] * w, ratio[1] * h, padw=pad[0], padh=pad[1])
+
+            if self.tir_channel_expansion:  # HK @@ according to the paper this CE is a sort of augmentation hence no need to preliminary augment. One of the channels are inversion hence avoid channel inversion aug
+                img = np.repeat(img[np.newaxis, :, :], 3, axis=0)  # convert GL to RGB by replication
+                img_ce = np.zeros_like(img).astype('float64')
+
+                # CH1 hist equalization
+                img_chan = scaling_image(img[0, :, :], scaling_type=self.scaling_type,
+                                         percentile=0, beta=self.beta)
+                img_ce[0, :, :] = img_chan.astype('float64')
+
+                img_chan = scaling_image(img[1, :, :], scaling_type=self.scaling_type,
+                                         percentile=self.percentile, beta=self.beta)
+
+                img_ce[1, :, :] = img_chan.astype('float64')
+
+                img_chan = inversion_aug(img_ce[1, :, :])  # invert the DRC one
+                img_ce[2, :, :] = img_chan.astype('float64')
+                img = img_ce
+
+        if self.augment:
+            # Augment imagespace
+            if not mosaic:
+                if hyp['random_perspective']:
+                    img, labels = random_perspective(img, labels,
+                                                     degrees=hyp['degrees'],
+                                                     translate=hyp['translate'],
+                                                     scale=hyp['scale'],
+                                                     shear=hyp['shear'],
+                                                     perspective=hyp['perspective'],
+                                                     filling_value=filling_value,
+                                                     is_fill_by_mean_img=self.is_tir_signal,
+                                                     random_pad=self.random_pad)
+                    if np.isnan(img).any():
+                        print('img is nan no mosaic after rand perspective')
+
+            if random.random() < hyp['inversion']:
+                img = inversion_aug(img)
+
+            if np.isnan(img).any():
+                print('img is nan gamma')
+            # print("std===",img.std(), img.mean())
+            # GL gain/attenuation
+            # Squeeze pdf (x-mu)*scl+mu
+            # img, labels = self.albumentations(img, labels)
+            img = self.albumentations_gamma_contrast(
+                img)  # apply RandomBrightnessContrast only since it has buggy response
+
+            if random.random() < hyp['gamma_liklihood']:
+                if img.dtype == np.uint16 or img.dtype == np.uint8:
+                    img = img / np.iinfo(img.dtype).max
+                if (img.max() > 1.0).any():
+                    img[img > 1.0] = 1.0
+                if (img < 0).any():
+                    img[img < 0] = 0
+
+                gamma = np.random.uniform(hyp['gamma'], 200 - hyp['gamma']) / 100.0
+                img = adjust_gamma(img, gamma, gain=1)
+
+            if np.isnan(img).any():
+                print('img is nan gamma')
+
+            if hyp['hsv_h'] > 0 or hyp['hsv_s'] > 0 or hyp['hsv_v'] > 0:
+                # Augment colorspace
+                augment_hsv(img, hgain=hyp['hsv_h'], sgain=hyp['hsv_s'], vgain=hyp['hsv_v'])
+
+            # Apply cutouts
+            # if random.random() < 0.9:
+            #     labels = cutout(img, labels)
+
+            if random.random() < hyp['paste_in']:
+                sample_labels, sample_images, sample_masks = [], [], []
+                while len(sample_labels) < 30:  # upto 30 tries to have mosaic of 4 images (anchor + 3 X random)
+                    sample_labels_, sample_images_, sample_masks_ = load_samples(self, random.randint(0,
+                                                                                                      len(self.labels) - 1),
+                                                                                 file_type=file_type)
+                    sample_labels += sample_labels_
+                    sample_images += sample_images_
+                    sample_masks += sample_masks_
+                    # print(len(sample_labels))
+                    if len(sample_labels) == 0:
+                        break
+                labels = pastein(img, labels, sample_labels, sample_images, sample_masks)
+                # try:
+                #
+                #     tag='paste_in'
+                #     import tifffile
+                #     if len(img.shape) == 2:
+                #         tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+                #                          img[:,:,np.newaxis])
+                #     else:
+                #         tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+                #                          img)
+                # except Exception as e:
+                #     print(e)
+
+        nL = len(labels)  # number of labels
+        if nL:
+            labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])  # convert xyxy to xywh
+            labels[:, [2, 4]] /= img.shape[0]  # normalized height 0-1
+            labels[:, [1, 3]] /= img.shape[1]  # normalized width 0-1
+
+        if self.augment:
+            # flip up-down
+            if random.random() < hyp['flipud']:
+                img = np.flipud(img)
+                if nL:
+                    labels[:, 2] = 1 - labels[:, 2]
+
+            # flip left-right
+            if random.random() < hyp['fliplr']:
+                img = np.fliplr(img)
+                if nL:
+                    labels[:, 1] = 1 - labels[:, 1]
+
+        labels_out = torch.zeros((nL, 6))
+        if nL:
+            labels_out[:, 1:] = torch.from_numpy(labels)
+
+        #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od', 'img_ce.tiff'), 255*img.transpose(1,2,0).astype('uint8'))
+        if not self.tir_channel_expansion:
+            if self.is_tir_signal:
+                if len(img.shape) == 2:
+                    img = np.repeat(img[np.newaxis, :, :], self.input_channels,
+                                    axis=0)  # convert GL to 3-ch if any RGB by replication
+                    # print('Warning , TIR image should be 3dim by now (w,h,1)', 100*'*')
+                else:
+                    img = np.repeat(img.transpose(2, 0, 1), self.input_channels, axis=0)
+            else:
+                # Convert
+                img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+
+            if 0:
+                import matplotlib.pyplot as plt
+                plt.figure()
+                plt.hist(img.ravel(), bins=128)
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/output',
+                                         os.path.basename(self.img_files[index]).split('.')[0] + 'pre_' + str(
+                                             self.scaling_type)))
+
+            # import tifffile
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded_before_scaling_' + '_' +str(str(img.max())) + '_' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+            #                  (img.transpose(1, 2, 0)))
+
+            # In case moasaic of mixed PNG and TIFF the TIFF is pre scaled while the PNG shouldn;t
+            if file_type != 'png':
+
+                # img_size, roi = self.rectangle_res_roi(index)  # HK tried to normalize the image according to the real roi inside the square
+                # img = scaling_image(img, scaling_type=self.scaling_type,
+                #                     percentile=self.percentile, beta=self.beta,
+                #                     roi=roi, img_size=img_size)
+                if self.recorded_noise:
+                    index_noise_same = np.random.randint(0, len(self.noise_filenames ))
+                    img_noise_path = self.noise_filenames[index_noise_same]
+                    img_noise = cv2.imread(img_noise_path, -1)
+
+                    if len(img.shape) == 3:
+                        shape_tup = img.shape[1:]
+                    else:
+                        shape_tup = img.shape
+
+                    img_noise = letterbox(img_noise, shape_tup, 32)[0]  # reshpae presentation image for debug
+
+                    img_noise = img_noise[np.newaxis, :, :]  # (640,640, 1)
+                else:
+                    min_val = np.percentile(img.ravel(), 0.5)
+                    max_val = np.percentile(img.ravel(), 100 - 0.5)
+                    density_per_scanline = int(0.5 + img.shape[1]*4/128)
+                    pattern_len = 3
+                    img_noise = np.zeros_like(img).astype('uint16')
+                    for row in range (img.shape[1]):
+                        pattern_location = random.choices(range(img.shape[1] - pattern_len), k=density_per_scanline)
+                        pattern_location.sort()
+                        noise_amp = np.random.randint(0, max_val- min_val, len(pattern_location))
+                        for ix, noise_patt in enumerate(pattern_location):
+                            img_noise[0,row,noise_patt:noise_patt+pattern_len] = np.array(pattern_len*[noise_amp[ix]])
+
+
+
+
+                img = img + img_noise
+
+                img = scaling_image(img, scaling_type=self.scaling_type,
+                                    percentile=self.percentile, beta=self.beta)
+            else:
+                img = scaling_image(img,
+                                    scaling_type='single_image_0_to_1')  # safer in case double standartiozation one before mosaic and her the last one since mosaic is random based occurance
+
+                # print('ka')
+            if 0:
+                import matplotlib.pyplot as plt
+                # plt.figure()
+                plt.hist(img.ravel(), bins=128)
+                plt.savefig(os.path.join('/home/hanoch/projects/tir_od/output',
+                                         os.path.basename(self.img_files[index]).split('.')[
+                                             0] + '_hist_post_scaling_' + str(self.scaling_type)))
+                # aa1 = np.repeat(img[1,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32')
+                # cv2.imwrite('test/exp40/test_batch88_labels__1.jpg', aa1*255)
+                # aa1 = np.repeat(img.transpose(1,2,0), 3, axis=2).astype('float32')
+        # print('\n 1st', img.shape)
+        if np.isnan(img).any():
+            print('img {} index : {} is nan fin'.format(self.img_files[index], index))
+            # raise
+        # try:
+        #     tag='full_rect'
+        #     import tifffile
+        #     tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output', 'img_loaded__' + tag +'__' +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) + '.tiff'),
+        #                      (img.transpose(1, 2, 0)*2**16).astype('uint16'))
+        # except Exception as e:
+        #     print(f'\nfailed reading: due to {str(e)}')
+
+        # #
+        img = np.ascontiguousarray(img)
+        # print('\n 2nd', img.shape)
+        return torch.from_numpy(img), labels_out, self.img_files[index], shapes
 
 
 # Ancillary functions --------------------------------------------------------------------------------------------------

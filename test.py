@@ -13,10 +13,17 @@ from models.experimental import attempt_load
 from utils.datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
     box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
-from utils.metrics import ap_per_class, ConfusionMatrix
+from utils.metrics import ap_per_class, ConfusionMatrix, range_bar_plot
 from utils.plots import plot_images, output_to_target, plot_study_txt, append_to_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
 import pandas as pd
+
+
+def object_size_to_range(obj_height_pixels: float, focal:int):
+    pixel_size = 17e-6
+    obj_height_m = 1.8
+    return obj_height_m * focal * 1e-3 / (obj_height_pixels * pixel_size)
+
 
 def test(data,
          weights=None,
@@ -138,6 +145,23 @@ def test(data,
     ])
 
     stats_all_large, stats_person_medium = [], []
+    n_bins_of100m = 20
+    if dataloader.dataset.use_csv_meta_data_file:
+
+        range_bins = {x.item():[0]*n_bins_of100m for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}
+        range_bins_support = {x.item():[0]*n_bins_of100m for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}
+        gt_per_range_bins = {x.item(): [[] for _ in range(n_bins_of100m)] for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}# collecting GT labels
+
+        for sensor_type in pd.unique(dataloader.dataset.df_metadata['sensor_type']):
+            exec('stats_all_sensor_type_{}'.format(sensor_type.item()) + '=[]')  # 'stats_all_50'
+            exec('stats_all_sensor_type_{}_with_range'.format(sensor_type.item()) + '=[]')  # 'stats_all_50'
+
+        for daytime in pd.unique(dataloader.dataset.df_metadata['part_in_day']):
+            exec('stats_all_time_{}'.format(daytime.lower()) + '=[]')  # 'stats_all_day'
+
+        sensor_type_vars = [key for key in vars().keys() if 'stats_all_sensor_type' in key and not '_with_range' in key]
+        time_vars = [key for key in vars().keys() if 'stats_all_time' in key and not '_with_range' in key]
+
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
         img = img.half() if half else img.float()
@@ -159,7 +183,7 @@ def test(data,
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
-            t = time_synchronized()
+            t = time_synchronized() #NMS
             out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True) # Does thresholding for class  : list of detections, on (n,6) tensor per image [xyxy, conf, cls]
             # out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=False) # Does thresholding for class  : list of detections, on (n,6) tensor per image [xyxy, conf, cls]
             t1 += time_synchronized() - t
@@ -174,9 +198,7 @@ def test(data,
 
             if len(pred) == 0:
                 if nl:
-                    stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))    #niou for COCO 0.5:0.05:1
-                    # stats_all_large.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
-                    # stats_person_medium.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                    stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls, path))    #niou for COCO 0.5:0.05:1
                 continue
 
             # Predictions
@@ -247,11 +269,6 @@ def test(data,
                                 'bbox': [[round(x, 3) for x in it[1:]]]})
                         ], ignore_index=True)
 
-                # res_all.append({'image_id': image_id, 'inf' :collect_info})
-
-            # df = pd.DataFrame(res_all)
-
-
             # Assign all predictions as incorrect ; pred takes top 300 predictions conf over 10 ious [0.5:0.95:0.05]
             correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=device)
             if nl:
@@ -266,8 +283,8 @@ def test(data,
 
                 # Per target class
                 for cls in torch.unique(tcls_tensor):
-                    ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
-                    pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+                    ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # target indices
+                    pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # prediction indices
 
                     # Search for detections
                     if pi.shape[0]:
@@ -298,13 +315,43 @@ def test(data,
                 ], ignore_index=True)
 
 
-            if not training or 1:
+            if 1: #not training or 1:
                 # assert len(pred[:, :4]) == 1
-                x, y, w, h = xyxy2xywh(pred[:, :4])[0]
+                x, y, w, h = xyxy2xywh(pred[:, :4])[0]##HK BUG !! need to go over all preds see which indexes aligned to which value
                 if w * h > hyp['person_size_small_medium_th'] and  w * h <= hyp['car_size_small_medium_th']:
                     stats_person_medium.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                #     [(ix, w.cpu() * h.cpu()) for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4])) if w * h > hyp['person_size_small_medium_th'] and  w * h <= hyp['car_size_small_medium_th']]
                 if w * h > hyp['car_size_small_medium_th']:
                     stats_all_large.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+
+                #     sensor type
+                if dataloader.dataset.use_csv_meta_data_file:
+
+                    time_in_day = dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['part_in_day'].item().lower()
+                    # eval([x for x in time_vars if str(time_in_day) in x][0]).append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                    exec([x for x in time_vars if str(time_in_day) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
+
+                    sensor_type = dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['sensor_type'].item()
+                    print(sensor_type)
+                    # eval([x for x in sensor_type_vars if str(sensor_type) in x][0]).append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+                    # obj_range_m = object_size_to_range(obj_height_pixels=h, focal=sensor_type)
+                    obj_range_m = torch.tensor([(object_size_to_range(obj_height_pixels=(np.sqrt(h.cpu()*w.cpu())), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4]))])
+                    gt_range = [(object_size_to_range(obj_height_pixels=(np.sqrt(h*w)), focal=210)) for ix, (x, y, w, h) in enumerate(labels[:,1:5].cpu())]
+                    gt_range = [_range//100 for _range in gt_range]
+                    for gt_lbl, rng_100 in zip(labels[:,0], gt_range):
+                        if rng_100 < n_bins_of100m :
+                            gt_per_range_bins[sensor_type][int(rng_100.item())].append(gt_lbl.item())  # add to each range bin GT the GT counts
+
+                        # (obj_range_m.cpu().reshape(-1))
+                    exec([x for x in sensor_type_vars if str(sensor_type) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
+                    exec([x+'_with_range' for x in sensor_type_vars if str(sensor_type) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls, obj_range_m))')
+
+
+
+                    # for daytime in pd.unique(dataloader.dataset.df_metadata['part_in_day']):
+                    #     exec('stats_all_part_in_day{}'.format(daytime.lower()) + '=[]')  # 'stats_all_day'
+
+
 
         # Plot images  aa = np.repeat(img[0,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32') cv2.imwrite('test/exp40/test_batch88_labels__.jpg', aa*255)
         if plots and batch_i > 10 or 1:
@@ -320,25 +367,95 @@ def test(data,
     if not training or 1:
         stats_person_medium = [np.concatenate(x, 0) for x in zip(*stats_person_medium)]  # to numpy
         stats_all_large = [np.concatenate(x, 0) for x in zip(*stats_all_large)]  # to numpy
+        if dataloader.dataset.use_csv_meta_data_file:
+            for time_var in time_vars:
+                exec('{}=[np.concatenate(x, 0) for x in zip(*{})]'.format(time_var, time_var))  # 'stats_all_50'
+
+            for sensor_type in sensor_type_vars:
+                exec('{}=[np.concatenate(x, 0) for x in zip(*{})]'.format(sensor_type, sensor_type))  # 'stats_all_50'
+                exec('{}_with_range=[np.concatenate(x, 0) for x in zip(*{}_with_range)]'.format(sensor_type, sensor_type))  # 'stats_all_50'
 
     if len(stats) and stats[0].any(): # P, R @  # max F1 index if any correct prediction
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
-        if not training or 1:
-            if bool(stats_person_medium):
-                p_med, r_med, ap_med, f1_med, ap_class_med = ap_per_class(*stats_person_medium, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names, tag='small_objects')
-                ap50_med, ap_med = ap_med[:, 0], ap_med.mean(1)  # AP@0.5, AP@0.5:0.95
-                mp_med, mr_med, map50_med, map_med = p_med.mean(), r_med.mean(), ap50_med.mean(), ap_med.mean()
-                nt_med = np.bincount(stats_person_medium[3].astype(np.int64), minlength=nc)  # number of targets per class
-            if bool(stats_all_large):
-                p_large, r_large, ap_large, f1_large, ap_class_large = ap_per_class(*stats_all_large, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names, tag='large_objects')
-                ap50_large, ap_large = ap_large[:, 0], ap_large.mean(1)  # AP@0.5, AP@0.5:0.95
-                mp_large, mr_large, map50_large, map_large = p_large.mean(), r_large.mean(), ap50_large.mean(), ap_large.mean()
-                nt_large = np.bincount(stats_all_large[3].astype(np.int64), minlength=nc)  # number of targets per class
-
         ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
         mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
-
         nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
+
+        if bool(stats_person_medium):
+            p_med, r_med, ap_med, f1_med, ap_class_med = ap_per_class(*stats_person_medium, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names, tag='small_objects')
+            ap50_med, ap_med = ap_med[:, 0], ap_med.mean(1)  # AP@0.5, AP@0.5:0.95
+            mp_med, mr_med, map50_med, map_med = p_med.mean(), r_med.mean(), ap50_med.mean(), ap_med.mean()
+            nt_med = np.bincount(stats_person_medium[3].astype(np.int64), minlength=nc)  # number of targets per class
+
+        if bool(stats_all_large):
+            p_large, r_large, ap_large, f1_large, ap_class_large = ap_per_class(*stats_all_large, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names, tag='large_objects')
+            ap50_large, ap_large = ap_large[:, 0], ap_large.mean(1)  # AP@0.5, AP@0.5:0.95
+            mp_large, mr_large, map50_large, map_large = p_large.mean(), r_large.mean(), ap50_large.mean(), ap_large.mean()
+            nt_large = np.bincount(stats_all_large[3].astype(np.int64), minlength=nc)  # number of targets per class
+
+        if dataloader.dataset.use_csv_meta_data_file:
+            for time_var in time_vars:
+                if bool(eval(time_var)):
+                    # TODO in the names of classes in labels add the support from nt_, also pass the support of overall and the title name like in the tag but only day /night to the title inside plot_pr_curve()
+                    exec("nt_{} = np.bincount({}[3].astype(np.int64), minlength={})".format(time_var, time_var, nc))
+                    exec("p_{}, r_{}, ap_{}, f1_{}, ap_class_{} = ap_per_class(*{}, plot={}, v5_metric={}, save_dir={}, names={}, tag={}, class_support=nt_{})".format(time_var,
+                                                                time_var, time_var, time_var, time_var, time_var, plots, v5_metric, 'str(save_dir)', names, 'str(time_var)', time_var))
+
+                    exec("ap50_{}, ap_{} = ap_{}[:, 0], ap_{}.mean(1)".format(time_var, time_var, time_var, time_var))
+                    exec("mp_{}, mr_{}, map50_{}, map_{} = p_{}.mean(), r_{}.mean(), ap50_{}.mean(), ap_{}.mean()".format(time_var, time_var, time_var, time_var, time_var, time_var, time_var, time_var))
+
+
+            for sensor_type in sensor_type_vars:
+                if bool(eval(sensor_type)):
+                    exec("nt_{} = np.bincount({}[3].astype(np.int64), minlength={})".format(sensor_type, sensor_type, nc))
+
+                    exec("p_{}, r_{}, ap_{}, f1_{}, ap_class_{} = ap_per_class(*{}, plot={}, v5_metric={}, save_dir={}, names={}, tag={}, class_support=nt_{})".format(sensor_type,
+                                                                sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, plots, v5_metric, 'str(save_dir)', names, 'str(sensor_type)',sensor_type))
+
+                    exec("ap50_{}, ap_{} = ap_{}[:, 0], ap_{}.mean(1)".format(sensor_type, sensor_type, sensor_type, sensor_type))
+                    exec("mp_{}, mr_{}, map50_{}, map_{} = p_{}.mean(), r_{}.mean(), ap50_{}.mean(), ap_{}.mean()".format(sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, sensor_type, sensor_type))
+
+                    sensor_focal = int(sensor_type.split('_')[-1])
+                    if  1 :#sensor_focal > 100: # ML
+                        exec('ranges={}_with_range[-1]//100'.format(sensor_type))
+                        for rng_100 in range(0,n_bins_of100m):
+                            # ind = np.array([])
+                            # exec('ind = np.where(ranges == rng_100)[0]')
+                            ind = eval('np.where(ranges == rng_100)[0]')
+                            stat_list_per_range = list()
+                            if ind.any(): # if there were detections at that range bin
+                                for ele in range(3):# taking the relevant preds related to the distance bin, since P/R/AP are computed globally vs. all GT/targets then it is compared to all targets
+                                    stat_list_per_range.append(eval(sensor_type)[ele][ind])
+                                # GT at thta bin range
+                                if not bool(gt_per_range_bins[sensor_focal][rng_100]): # predictions but no GT => FP=>low Prcesion
+                                    map50_per_range = np.array(0)
+                                    nt_stat_list_per_range = np.array(0)
+                                else:
+                                    stat_list_per_range.append(np.array([x for x in gt_per_range_bins[sensor_focal][rng_100]])) # add all targets/labels
+                                    nt_stat_list_per_range = np.bincount(stat_list_per_range[3].astype(np.int64), minlength=nc)
+
+                                    p_stat_list_per_range, r_stat_list_per_range, ap_stat_list_per_range, f1_stat_list_per_range, \
+                                    ap_class_stat_list_per_range = ap_per_class(*stat_list_per_range, plot=plots, v5_metric=v5_metric,
+                                                                    save_dir='', names=names, tag='',
+                                                                                class_support=nt_stat_list_per_range)
+
+                                    ap50_per_range, ap_per_range = ap_stat_list_per_range[:, 0], ap_stat_list_per_range.mean(1)  # AP@0.5, AP@0.5:0.95
+                                    mp_per_range, mr_per_range, map50_per_range, map_per_range = p_stat_list_per_range.mean(), r_stat_list_per_range.mean(), ap50_per_range.mean(), ap_per_range.mean()
+                            else:# no prediction at this range
+                                if not bool(gt_per_range_bins[sensor_focal][rng_100]):# there are GT but no pred
+                                    nt_stat_list_per_range = np.array(0)
+                                    fn = len(gt_per_range_bins[sensor_focal][rng_100])
+                                    recall = 0 # no TP 0/TP+FN
+                                    precision = 0
+                                    map50_per_range = np.array(0)
+                            print(map50_per_range)
+                            range_bins[sensor_focal][rng_100] = map50_per_range.item()
+                            range_bins_support[sensor_focal][rng_100] = nt_stat_list_per_range.sum().item()
+            range_bar_plot(n_bins_of100m, range_bins, save_dir, range_bins_support=range_bins_support)
+            # for time_var in time_vars:
+            #     for sensor_type in sensor_type_vars:
+
+        # nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
     else:
         nt = torch.zeros(1)
         nt_med = torch.zeros(1)
@@ -414,13 +531,13 @@ def test(data,
 
             anno = COCO(anno_json)  # init annotations api
             pred = anno.loadRes(pred_json)  # init predictions api
-            eval = COCOeval(anno, pred, 'bbox')
+            eval1 = COCOeval(anno, pred, 'bbox')
             if is_coco:
-                eval.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]  # image IDs to evaluate
-            eval.evaluate()
-            eval.accumulate()
-            eval.summarize()
-            map, map50 = eval.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
+                eval1.params.imgIds = [int(Path(x).stem) for x in dataloader.dataset.img_files]  # image IDs to evaluate
+            eval1.evaluate()
+            eval1.accumulate()
+            eval1.summarize()
+            map, map50 = eval1.stats[:2]  # update results (mAP@0.5:0.95, mAP@0.5)
         except Exception as e:
             print(f'pycocotools unable to run: {e}')
 
@@ -437,6 +554,9 @@ def test(data,
         predictions_df.to_csv(pred_df_file, index=False)
 
     return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+
+
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='test.py')
@@ -473,6 +593,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--save-path', default='', help='save to project/name')
 
+    parser.add_argument('--csv-metadata-path', default='', help='save to project/name')
 
     opt = parser.parse_args()
 
@@ -541,6 +662,15 @@ test based on RGB coco model
 
 --weights /mnt/Data/hanoch/runs/train/yolov7575/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
 --weights /home/hanoch/projects/tir_od/runs/gpu02/yolov74/weights --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6
+
+3class
+/mnt/Data/hanoch/runs/train/yolov71058
+--weights /mnt/Data/hanoch/runs/train/yolov71058/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_center_roi_aug_list_train_cls.yaml --img-size 640 --conf 0.02 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task val --iou-thres 0.6
+
+tir_tiff_w_center_roi_validation_set_train_cls_usa.txt
+
+# per day/nigh SY/ML
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6 --csv-metadata-path tir_od/tir_center_merged_seq_tiff_last_original_png.xlsx
 -------  Error analysis  ------------
 1st run with conf_th=0.0001 then observe the desired threshold, re-run with the desired threshold abd observe images with bboxes given the deired threshold 
 """

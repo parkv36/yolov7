@@ -14,7 +14,7 @@ from PIL import Image
 import argparse
 from utils.datasets import create_dataloader, create_folder
 
-from utils.datasets import LoadStreams, LoadImages, scaling_image
+from utils.datasets import LoadStreams, LoadImages, scaling_image, LoadImagesAddingNoiseAndLabels, LoadImagesAndLabels, InfiniteDataLoader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
     check_requirements, print_mutation, set_logging, one_cycle, colorstr
@@ -81,7 +81,9 @@ def compute_precision_recall_ap(preds, gts, iou_threshold=0.5):
     return precision, recall, ap, np.array(thresholds)
 
 # Compute mAP and plot precision-recall curve
-def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf_th=-1, min_precision_acceptible = 0.9):
+def compute_map(predictions, ground_truths, num_classes,
+                iou_threshold=0.5, conf_th=-1,
+                min_precision_acceptible=0.9, save_dir='', class_enum=''):
     aps = []
     plt.figure(figsize=(10, 7))
 
@@ -95,10 +97,13 @@ def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf
         precision, recall, ap, thresholds = compute_precision_recall_ap(preds, gts, iou_threshold)
         aps.append(ap)
         if 1:
-            plt.plot(recall, precision, label=f"Class {cls} (AP={ap:.2f})")
+            if class_enum:
+                plt.plot(recall, precision, label=f"Class {class_enum[cls]} (AP={ap:.2f})")
+            else:
+                plt.plot(recall, precision, label=f"Class {cls} (AP={ap:.2f})")
 
             inds = [i for i in range(0, np.where(precision < min_precision_acceptible)[0][-1].item())]
-            print('Pr, Re Th')
+            print('Pr, Re Th class{}'.format(cls))
             [(precision[i], recall[i], thresholds[i]) for i in inds]
             for i in range(0, np.where(precision < min_precision_acceptible)[0][-1].item(), int(len(inds)/20)):
                 print('Th {:.2f}, Pr {:.2f}, Re {:.2f}'.format(thresholds[i], 100*precision[i], 100*recall[i]))
@@ -106,8 +111,11 @@ def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf
                              xy=(recall[i], precision[i]),
                              xytext=(5, 5), textcoords='offset points',
                              fontsize=8)
+                # plt.savefig(os.path.join(save_dir, 'precision_recall_thresholds_class_' + str(cls) + '.png'))
+
         else:
             plt.plot(recall, precision, label=f"Class {cls} (AP={ap:.2f})")
+            os.path.join(save_dir, 'precision_recall_class_' + str(cls)+ '.png')
 
     mAP = np.mean(aps)
     plt.xlabel("Recall")
@@ -116,6 +124,8 @@ def compute_map(predictions, ground_truths, num_classes, iou_threshold=0.5, conf
     plt.legend()
     plt.grid()
     plt.show()
+    if save_dir:
+        plt.savefig(os.path.join(save_dir, 'map.png'))
 
     return mAP
 
@@ -229,19 +239,60 @@ def main(opt):
     opt.input_channels = 1
     opt.tir_channel_expansion = False
     opt.no_tir_signal = False
+    detection_res = list()
 
     if opt.detection_no_gt:
         dataloader = LoadImages(images_parent_folder, img_size=imgsz_test, stride=32,
                              scaling_type=opt.norm_type, input_channels=opt.input_channels,
                              no_tir_signal=opt.no_tir_signal,
                              tir_channel_expansion=opt.tir_channel_expansion)
+        plot = True
     else:
-        dataloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt,  # testloader
-                                                     hyp=hyp, cache=opt.cache_images, rect=False, rank=-1,
-                                                     # @@@ rect was True why?
-                                                     world_size=1, workers=8,
-                                                     pad=0.5, prefix=colorstr('val: '),
-                                                     rel_path_images=images_parent_folder, num_cls=nc)[0]
+        if opt.adding_ext_noise:
+            hyp['gamma_liklihood'] = 0.5
+            scaling_before_mosaic = bool(hyp.get('scaling_before_mosaic', False))
+            world_size = 1
+            workers = 8
+            rank = -1
+            image_weights = False
+            dataset = LoadImagesAddingNoiseAndLabels(path=test_path, img_size=imgsz_test,
+                                                        batch_size=batch_size, stride=gs,  # testloader
+                                                        hyp=hyp, cache_images=opt.cache_images, rect=False,
+                                                        pad=0.5, prefix=colorstr('val: '),
+                                                        rel_path_images=images_parent_folder,
+                                                        scaling_type=opt.norm_type,
+                                                        input_channels=opt.input_channels,
+                                                        num_cls=nc,
+                                                        tir_channel_expansion = opt.tir_channel_expansion,
+                                                        no_tir_signal = opt.no_tir_signal,
+                                                        scaling_before_mosaic = scaling_before_mosaic,
+                                                        path_noisy_samples=opt.noise_parent_folder)
+
+            batch_size = min(batch_size, len(dataset))
+            nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
+            sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
+            loader = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
+
+            # batch_size = min(batch_size, len(dataset))
+            # nw = min([os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers])  # number of workers
+            # sampler = torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
+            # loader = torch.utils.data.DataLoader if image_weights else InfiniteDataLoader
+            # Use torch.utils.data.DataLoader() if dataset.properties will update during training else InfiniteDataLoader()
+
+            dataloader = loader(dataset,
+                                batch_size=batch_size,
+                                num_workers=nw,
+                                sampler=sampler,
+                                pin_memory=True,
+                                collate_fn= LoadImagesAndLabels.collate_fn)
+
+        else:
+            dataloader = create_dataloader(test_path, imgsz_test, batch_size, gs, opt,  # testloader
+                                                 hyp=hyp, cache=opt.cache_images, rect=False, rank=-1,
+                                                 # @@@ rect was True why?
+                                                 world_size=1, workers=8,
+                                                 pad=0.5, prefix=colorstr('val: '),
+                                                 rel_path_images=images_parent_folder, num_cls=nc)[0]
 
     seen = 0
     t0 = 0
@@ -268,12 +319,12 @@ def main(opt):
     for img, targets, paths, shapes in tqdm(dataloader):
         if bool(opt.detection_no_gt):
             paths, img, im0s, _ = img, targets, paths, shapes
-            del targets
+            # del targets
             img = torch.from_numpy(img[None, ...]).to(opt.device)
+
         img = img.cpu().numpy().astype('float32').transpose(0, 2,3,1) # channel last
         nb, _, height, width = img.shape  # batch size, channels, height, width
-        seen += 1
-        with ((torch.no_grad())):
+        with (torch.no_grad()):
             # Run model
             t = time_synchronized()
             outname = [i.name for i in session.get_outputs()]
@@ -282,6 +333,7 @@ def main(opt):
             # image wise inside batch
             for ix, im in enumerate(img):
                 seen += 1
+                # #############  TEST VECTOR SANITY for OLD MODEL
                 if test_vectors_test:
                     im = cv2.imread(test_image)  # BGR
                     if not(opt.no_tir_signal):
@@ -340,55 +392,63 @@ def main(opt):
                     #           scores_above_th[x].item()) for x in nms_out]
                     #
                     predictions.extend([(bboxes_, ml_class_id_.item(), scores_above_th_.item()) for bboxes_ ,ml_class_id_, scores_above_th_ in zip(bboxes ,ml_class_id, scores_above_th_val)])
+                    if isinstance(targets, torch.Tensor):
+                        img_gt_lbls = targets[targets[:, 0] == ix, 1].cpu().numpy()
+                    else:
+                        img_gt_lbls = targets[targets[:, 0] == ix, 1]
 
-                    img_gt_lbls = targets[targets[:, 0] == ix, 1].cpu().numpy()
                     img_gt_boxes = targets[targets[:, 0] == ix, 2:]  # YOLO bbox are relative coordination (center x,y and w,h ) hence resolution independant
-                    img_gt_boxes_xyxy = [yolobbox_to_xyxy(*yolo_bb, imgsz_test, imgsz_test) for yolo_bb in img_gt_boxes]
-                    # img_gt_boxes_xywh = [[x[0], x[1],x[2]-x[0], x[3]-x[1]] for x in img_gt_boxes_xyxy]
-
-                    # Ground truths: [(bbox, class_id)]
-                    ground_truths.extend([(x, y) for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
-                    # ******************
-                    # Like test.py
-                    labels = torch.tensor([[y.item()] + x for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
-                    nl = len(labels)
-                    # if nl == ml_class_id.shape[0]:
-                    #     print('prob all TP')
-                    #     print('path', paths[seen-1])
-                    #     predn[pi, :4]
-                    tcls = labels[:, 0].tolist() if nl else []  # target class
                     pred = torch.tensor([np.append(np.append(bboxes_, scores_above_th_.item()), ml_class_id_.item()) for bboxes_, ml_class_id_, scores_above_th_ in
                                                     zip(bboxes, ml_class_id, scores_above_th_val)])
+                    if bool(opt.detection_no_gt):
+                        im0s = detection_plot(colors, dataloader, detection_res, im0s, opt, paths, plot, pred,
+                                              uniq_class_subset)
 
-                    predn = pred.clone()
-                    tbox = labels[:, 1:5]
-                    correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=opt.device)
-                    if nl:
-                        detected = []  # target indices
-                        tcls_tensor = labels[:, 0]
-                        # Per target class
-                        for cls in torch.unique(tcls_tensor):
-                            ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
-                            pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+                    else:
+                        img_gt_boxes_xyxy = [yolobbox_to_xyxy(*yolo_bb, imgsz_test, imgsz_test) for yolo_bb in img_gt_boxes]
+                        # img_gt_boxes_xywh = [[x[0], x[1],x[2]-x[0], x[3]-x[1]] for x in img_gt_boxes_xyxy]
 
-                            # Search for detections
-                            if pi.shape[0]:
-                                # Prediction to target ious
-                                ious, i = box_iou(predn[pi, :4], tbox[ti]).max(1)  # best ious, indices
+                        # Ground truths: [(bbox, class_id)]
+                        ground_truths.extend([(x, y) for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
+                        # ******************
+                        # Like test.py
+                        labels = torch.tensor([[y.item()] + x for x, y in zip(img_gt_boxes_xyxy, img_gt_lbls)])
+                        nl = len(labels)
+                        # if nl == ml_class_id.shape[0]:
+                        #     print('prob all TP')
+                        #     print('path', paths[seen-1])
+                        #     predn[pi, :4]
+                        tcls = labels[:, 0].tolist() if nl else []  # target class
 
-                                # Append detections
-                                detected_set = set()
-                                for j in (ious > p_r_iou).nonzero(as_tuple=False): # iouv[0]=0.5 IOU for dectetions iouv in general are all 0.5:0.05:.. for COCO
-                                    d = ti[i[j]]  # detected target
-                                    if d.item() not in detected_set:
-                                        detected_set.add(d.item())
-                                        detected.append(d)
-                                        correct[pi[j]] = ious[j] > p_r_iou  # iou_thres is 1xn
-                                        if len(detected) == nl:  # all targets already located in image
-                                            break
-                    stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(),
-                                  tcls))  # correct @ IOU=0.5 of pred box with target
-                    pred_tgt_acm.append({'correct': correct.cpu().numpy(), 'conf': pred[:, 4].cpu().numpy(), 'pred_cls': pred[:, 5].cpu().numpy(), 'tcls': tcls} )
+                        predn = pred.clone()
+                        tbox = labels[:, 1:5]
+                        correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device=opt.device)
+                        if nl:
+                            detected = []  # target indices
+                            tcls_tensor = labels[:, 0]
+                            # Per target class
+                            for cls in torch.unique(tcls_tensor):
+                                ti = (cls == tcls_tensor).nonzero(as_tuple=False).view(-1)  # prediction indices
+                                pi = (cls == pred[:, 5]).nonzero(as_tuple=False).view(-1)  # target indices
+
+                                # Search for detections
+                                if pi.shape[0]:
+                                    # Prediction to target ious
+                                    ious, i = box_iou(predn[pi, :4], tbox[ti]).max(1)  # best ious, indices
+
+                                    # Append detections
+                                    detected_set = set()
+                                    for j in (ious > p_r_iou).nonzero(as_tuple=False): # iouv[0]=0.5 IOU for dectetions iouv in general are all 0.5:0.05:.. for COCO
+                                        d = ti[i[j]]  # detected target
+                                        if d.item() not in detected_set:
+                                            detected_set.add(d.item())
+                                            detected.append(d)
+                                            correct[pi[j]] = ious[j] > p_r_iou  # iou_thres is 1xn
+                                            if len(detected) == nl:  # all targets already located in image
+                                                break
+                        stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(),
+                                      tcls))  # correct @ IOU=0.5 of pred box with target
+                        pred_tgt_acm.append({'correct': correct.cpu().numpy(), 'conf': pred[:, 4].cpu().numpy(), 'pred_cls': pred[:, 5].cpu().numpy(), 'tcls': tcls} )
 
 
                 else:
@@ -460,28 +520,42 @@ def main(opt):
 
                         # Ground truths: [(bbox, class_id)]
                         ground_truths.extend([(x, y) for x, y in zip (img_gt_boxes_xyxy, img_gt_lbls_in_coco_order)])
-                    else:
-                        save_fname = paths.split('/')[-1].split('.')[0] + '_'+ str(getattr(dataloader, 'frame', 0)) + '.png'  # img.jpg
+                    else: # detections only no GT
+                        im0s = detection_plot(colors, dataloader, detection_res, im0s, opt, paths, plot, pred,
+                                              uniq_class_subset)
 
-                        im0s = letterbox(im0s, imgsz_test, 32)[0] # reshpae presentation image for debug
-                        im0s = np.repeat(im0s[:, :, np.newaxis], 3, axis=2)  # convert GL to RGB by replication
-                        im0s = scaling_image(im0s, scaling_type='single_image_percentile_0_1')
-                        if im0s.max() <= 1:
-                            im0s = im0s * 255
-
-                        if scores.max() > 0.2:
-                            print('ka')
-                        for i, det in enumerate(preds):  # detections per image
-                            xyxy, cls, conf = det
-                            label = f'{coco_lass_names[int(cls)]} {conf:.2f}'
-                            if isinstance(xyxy, list):
-                                xyxy = xyxy[0]
-                            plot_one_box(xyxy, im0s, label=label, color=colors[int(cls)], line_thickness=1)
-                            save_path = os.path.join(opt.save_path, save_fname)
-                            cv2.imwrite(save_path, im0s)
-                        else:
-                            print(scores.max())
-
+                        tag = ''
+                        # if opt.adding_ext_noise:
+                        #     save_fname = paths.split('/')[-1].split('.')[0] + '_' + str(
+                        #         getattr(dataloader, 'frame', 0)) + '_noisy_data.png'  # img.jpg
+                        # else:
+                        #     save_fname = paths.split('/')[-1].split('.')[0] + '_'+ str(getattr(dataloader, 'frame', 0)) + '.png'  # img.jpg
+                        #
+                        # im0s = letterbox(im0s, imgsz_test, 32)[0] # reshpae presentation image for debug
+                        # im0s = np.repeat(im0s[:, :, np.newaxis], 3, axis=2)  # convert GL to RGB by replication
+                        # im0s = scaling_image(im0s, scaling_type='single_image_percentile_0_1')
+                        # if im0s.max() <= 1:
+                        #     im0s = im0s * 255
+                        #
+                        # if bool(preds):
+                        #     for i, det in enumerate(preds):  # detections per image
+                        #         xyxy, cls, conf = det
+                        #         label = f'{coco_lass_names[int(cls)]} {conf:.2f}'
+                        #         if plot:
+                        #             if isinstance(xyxy, list):
+                        #                 xyxy = xyxy[0]
+                        #             plot_one_box(xyxy, im0s, label=label, color=colors[int(cls)], line_thickness=1)
+                        #             save_path = os.path.join(opt.save_path, save_fname)
+                        #             cv2.imwrite(save_path, im0s)
+                        #         detection_res.append({'file': paths.split('/')[-1], 'fname': paths.split('/')[-1].split('_right')[0].split('_left')[0], 'class': cls, 'conf': conf, 'xyxy': xyxy})
+                        #
+                        # else:
+                        #     print(scores.max())
+                        #     detection_res.append({'file': paths.split('/')[-1], 'fname': paths.split('/')[-1].split('_right')[0].split('_left')[0], 'class': -1, 'conf': 0, 'xyxy': -1})
+                        #
+                        # road  : 20250112_173041_FS_50_XGA_Test55A_SY_RD_US_right_roi_375
+                        # diluted_by_factor = 100
+                        # if seen %diluted_by_factor:
             t0 += time_synchronized() - t
             # out coco 80 classes : [1, 25200, 85] [batch, proposals_3_scales,4_box__coord+1_obj_score + n x classes]
             # Compute loss
@@ -492,7 +566,7 @@ def main(opt):
         # if 1:
         #     print('Speed: %.1f/%.1f/%.1f ms inference/NMS/total per %gx%g image at batch-size %g' % t)
         # Predicted: [(bbox, class_id, confidence)]
-    if is_new_model:
+    if is_new_model and not bool(opt.detection_no_gt):
         df = pd.DataFrame(pred_tgt_acm)
         df.to_csv(os.path.join(opt.save_path, 'onnx_model_pred_tgt_acm_conf_th_' + str(det_threshold.__format__('.3f')) + '.csv'), index=False)
 
@@ -500,15 +574,69 @@ def main(opt):
         if len(stats) and stats[0].any():  # P, R @  # max F1 index
             p, r, ap, f1, ap_class = ap_per_class(*stats, plot=True, v5_metric=False, save_dir=opt.save_path,
                                                   names=names)  # based on correct @ IOU=0.5 of pred box with target
+        pf = '%20s' + '%12i' * 2 + '%12.3g' * 4  # print format
+
         for i, c in enumerate(ap_class):
-            print(pf % (names[c], seen, nt[c], p[i], r[i], ap50[i], ap[i]))
+            print( (names[c], seen, p[i], r[i], ap[i]))
 
         # map = compute_map(predictions, ground_truths, num_classes=2, iou_threshold=0.5, conf_th=det_threshold)
     else:
-        map = compute_map(predictions, ground_truths, num_classes=3, iou_threshold=0.5, conf_th=det_threshold, min_precision_acceptible=0.9)
+        # classes are confined to coco_lass_names
+        iou_threshold = 0.5
+        map = compute_map(predictions, ground_truths, num_classes=3,
+                          iou_threshold=iou_threshold, conf_th=det_threshold,
+                          min_precision_acceptible=0.9, save_dir=opt.save_path,
+                          class_enum=coco_lass_names)
+
+        tta_res = dict()
+        tta_res['predictions'] = predictions
+        tta_res['ground_truths'] = ground_truths
+        tta_res['iou_threshold'] = iou_threshold
+        with open(os.path.join(opt.save_path,  'metadata_for_pre_re_detection_threshold_' + str(det_threshold) + '.pkl'), 'wb') as f:
+            pickle.dump(tta_res, f)
+
     print(f"mAP: {map:.2f}")
 
+    if bool (detection_res):
+        df = pd.DataFrame(detection_res)
+        df.to_csv(os.path.join(opt.save_path, 'detections_results.csv'))
     return
+
+
+def detection_plot(colors, dataloader, detection_res, im0s, opt, paths, plot, pred, uniq_class_subset):
+    if pred.numel() > 0:
+        if opt.adding_ext_noise:
+            save_fname = paths.split('/')[-1].split('.')[0] + '_' + str(
+                getattr(dataloader, 'frame', 0)) + '_noisy_data.png'  # img.jpg
+        else:
+            save_fname = paths.split('/')[-1].split('.')[0] + '_' + str(
+                getattr(dataloader, 'frame', 0)) + '.png'  # img.jpg
+        im0s = np.repeat(im0s[:, :, np.newaxis], 3, axis=2)  # convert GL to RGB by replication
+        im0s = scaling_image(im0s, scaling_type='single_image_percentile_0_1')
+        if im0s.max() <= 1:
+            im0s = im0s * 255
+
+        for i, det in enumerate(pred):  # detections per image
+            xyxy = det[:4]
+            conf = det[4]
+            cls = int(det[5])
+            label = f'{uniq_class_subset[int(cls)]} {conf:.2f}'
+            if plot:
+                if isinstance(xyxy, list):
+                    xyxy = xyxy[0]
+                plot_one_box(xyxy, im0s, label=label, color=colors[int(cls)], line_thickness=1)
+                save_path = os.path.join(opt.save_path, save_fname)
+                cv2.imwrite(save_path, im0s)
+            detection_res.append(
+                {'file': paths.split('/')[-1], 'fname': paths.split('/')[-1].split('_right')[0].split('_left')[0],
+                 'class': cls, 'conf': conf, 'xyxy': xyxy})
+
+    else:
+        detection_res.append(
+            {'file': paths.split('/')[-1], 'fname': paths.split('/')[-1].split('_right')[0].split('_left')[0],
+             'class': -1, 'conf': 0, 'xyxy': -1})
+    return im0s
+
 
 if __name__ == '__main__':
 
@@ -538,6 +666,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--test-vectors-test-old-tir-1p5', action='store_true', help='') # based on CPP test vector
 
+    parser.add_argument('--adding-ext-noise', action='store_true', help='')
+
+    parser.add_argument('--noise-parent-folder', type=str, default='/home/hanoch/projects/tir_frames_rois/marmon_noisy_sy/noise_samples', help='')  # in case --detection-no-gt
     # --test-path   '/home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set_part.txt'  'Test51a_Test40A_test_set_part.txt'
 
     opt = parser.parse_args()
@@ -551,8 +682,18 @@ if __name__ == '__main__':
 
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt
     
-    DEtections only 
+    DEtections only old model  
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt
     Reducing th = 0.2
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.2  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt
+    Adding noise 
+    --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt --adding-ext-noise
+    
+    Plotting P/R curve over detections th=0.05
+    --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.05  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt      
+
+    DEtections only New model Yolov7999  
+    --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.66  --iou-thres 0.6 --norm-type single_image_percentile_0_1 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run --detection-no-gt --adding-ext-noise
+P/R curve 
+    --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.01  --iou-thres 0.6 --norm-type single_image_percentile_0_1  --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run/P_R_curve_test_set --adding-ext-noise
     """
