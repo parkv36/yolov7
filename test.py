@@ -158,6 +158,7 @@ def test(data,
         range_bins_recall_all_classes = {x.item():[np.array([0, 0])] *n_bins_of100m for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}
         range_bins_support_gt = {x.item():[0]*n_bins_of100m for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}
         gt_per_range_bins = {x.item(): [[] for _ in range(n_bins_of100m)] for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}# collecting GT labels
+        gt_path_per_range_bins = {x.item(): [[] for _ in range(n_bins_of100m)] for x in pd.unique(dataloader.dataset.df_metadata['sensor_type'])}# collecting GT labels
         bin_size_per_sensor = {}
 
         for sensor_type in pd.unique(dataloader.dataset.df_metadata['sensor_type']):
@@ -213,7 +214,7 @@ def test(data,
 
             if len(pred) == 0:
                 if nl:
-                    stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls, path))    #niou for COCO 0.5:0.05:1
+                    stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))    #niou for COCO 0.5:0.05:1
                 continue
 
             # Predictions
@@ -347,16 +348,15 @@ def test(data,
                     exec([x for x in time_vars if str(time_in_day) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
 
                     sensor_type = dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['sensor_type'].item()
-                    if 1: # ranges = func(height)
-                        obj_range_m = torch.tensor(
-                            [(object_size_to_range(obj_height_pixels=h.cpu(), focal=sensor_type))
-                             for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4]))])
-                        gt_range = [(object_size_to_range(obj_height_pixels=h, focal=sensor_type)) for
-                                    ix, (x, y, w, h) in enumerate(labels[:, 1:5].cpu())]
-                    else: #ranges = func(sqrt(height*width))
-                        obj_range_m = torch.tensor([(object_size_to_range(obj_height_pixels=(np.sqrt(h.cpu()*w.cpu())), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4]))])
-                        gt_range = [(object_size_to_range(obj_height_pixels=(np.sqrt(h*w)), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(labels[:,1:5].cpu())]
-
+                    obj_range_m = torch.tensor(
+                        [(object_size_to_range(obj_height_pixels=h.cpu(), focal=sensor_type, class_id=class_id.cpu().numpy().item()))
+                         for class_id, (x, y, w, h) in zip(pred[:, 5], xyxy2xywh(pred[:, :4]))])
+                    gt_range = [(object_size_to_range(obj_height_pixels=h, focal=sensor_type, class_id=class_id.numpy().item())) for
+                                class_id, (x, y, w, h) in zip(labels[:, 0].cpu(), labels[:, 1:5].cpu())]
+                    # else: #ranges = func(sqrt(height*width))
+                    #     obj_range_m = torch.tensor([(object_size_to_range(obj_height_pixels=(np.sqrt(h.cpu()*w.cpu())), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4]))])
+                    #     gt_range = [(object_size_to_range(obj_height_pixels=(np.sqrt(h*w)), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(labels[:,1:5].cpu())]
+                    #
                     if 1:
                         gt_range = [_range // 100 for _range in gt_range] #gt_range = [_range // 100 for _range in gt_range]
                     else:
@@ -365,10 +365,10 @@ def test(data,
                     for gt_lbl, rng_ in zip(labels[:,0], gt_range):
                         if rng_ < n_bins_of100m :
                             gt_per_range_bins[sensor_type][int(rng_.item())].append(int(gt_lbl.item()))  # add to each range bin GT the GT counts
-
+                            gt_path_per_range_bins[sensor_type][int(rng_.item())].append(str(path))
                         # (obj_range_m.cpu().reshape(-1))
                     exec([x for x in sensor_type_vars if str(sensor_type) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
-                    exec([x+'_with_range' for x in sensor_type_vars if str(sensor_type) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls, obj_range_m))')
+                    exec([x+'_with_range' for x in sensor_type_vars if str(sensor_type) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls, obj_range_m, pred[:, 5].shape[0]*[str(path)]))') # path is replicated to match each prediction TP/FP in the image
 
 
 
@@ -429,19 +429,27 @@ def test(data,
                     exec("ap50_{}, ap_{} = ap_{}[:, 0], ap_{}.mean(1)".format(time_var, time_var, time_var, time_var))
                     exec("mp_{}, mr_{}, map50_{}, map_{} = p_{}.mean(), r_{}.mean(), ap50_{}.mean(), ap_{}.mean()".format(time_var, time_var, time_var, time_var, time_var, time_var, time_var, time_var))
 
-            # if 1 : #debug
-            #     ranges100_pred = np.array([])
-            #     print('gt class dist per range cell of 100s and sum of GTs ')
-            #     print([(100*(ix+1), np.unique(x, return_counts=True), np.size(x)) for ix, x in enumerate(gt_per_range_bins[210])])
-            #     exec('ranges100_pred={}_with_range[-1]//100'.format('stats_all_sensor_type_210'))
-            #     exec('cls_pred={}_with_range[-2]'.format('stats_all_sensor_type_210'))
-            #
-            #     print('True predictions on 210', eval('ranges100_pred.shape'))
-            #     np.array([np.size(x) for ix, x in enumerate(gt_per_range_bins[210])]).T # predictions may be TRue or False
-            #     print('detections preds per range cell')
-            #     np.unique(ranges100_pred, return_counts=True)[1].T
-            #
-            #     [np.bincount(x, minlength=2) for ix, x in enumerate(gt_per_range_bins[210])]
+            if 0 : #debug
+                ranges100_pred = np.array([])
+                print('gt class dist per range cell of 100s and sum of GTs ')
+                print([(100*(ix+1), np.unique(x, return_counts=True), np.size(x)) for ix, x in enumerate(gt_per_range_bins[210])])
+                exec('ranges100_pred={}_with_range[4]//100'.format('stats_all_sensor_type_210'))
+                exec('cls_pred={}_with_range[2]'.format('stats_all_sensor_type_210'))
+                exec('predicted={}_with_range[0]'.format('stats_all_sensor_type_210'))
+
+                print('True predictions on 210', eval('ranges100_pred.shape'))
+                np.array([np.size(x) for ix, x in enumerate(gt_per_range_bins[210])]).T # predictions may be TRue or False
+                print('detections preds per range cell')
+                np.unique(ranges100_pred, return_counts=True)[1].T
+
+                [np.bincount(x, minlength=2) for ix, x in enumerate(gt_per_range_bins[210])]
+                range_bin_ = 1
+                np.unique(cls_pred[ranges100_pred == range_bin_], return_counts=True)
+                # count of good bad predictions per class
+                stats_all_sensor_type_210_with_range[2][ranges100_pred == range_bin_]
+
+                np.unique(stats_all_sensor_type_210_with_range[0][:, 0][ranges100_pred == range_bin_],
+                          return_counts=True)
 
             for sensor_type in sensor_type_vars:
                 if bool(eval(sensor_type)):
@@ -455,7 +463,7 @@ def test(data,
 
                     sensor_focal = int(sensor_type.split('_')[-1])
                     if  1 :#sensor_focal > 100: # ML
-                        exec('ranges={}_with_range[-1]//100'.format(sensor_type))
+                        exec('ranges={}_with_range[4]//100'.format(sensor_type))
 
                         for rng_100 in range(0,n_bins_of100m):
                             nt_stat_list_per_range = np.array([0, 0])
@@ -642,7 +650,7 @@ def sensor_type_breakdown_kpi(gt_per_range_bins, n_bins_of100m, names, nc, plots
 
             sensor_focal = int(sensor_type.split('_')[-1])
             if 1:  # sensor_focal > 100: # ML
-                exec('ranges={}_with_range[-1]//{}'.format(sensor_type, bin_size_per_sensor[sensor_focal]))
+                exec('ranges={}_with_range[3]//{}'.format(sensor_type, bin_size_per_sensor[sensor_focal]))
                 for rng_100 in range(0, n_bins_of100m):
                     # ind = np.array([])
                     # exec('ind = np.where(ranges == rng_100)[0]')
