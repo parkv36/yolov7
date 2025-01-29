@@ -200,14 +200,15 @@ def range_p_r_bar_plot(n_bins:int, range_bins_precision_all_classes:dict, range_
         x = 100 * np.arange(n_bins) + 100
         for (k_p, v_p), (k_r, v_r) in zip(range_bins_precision_all_classes.items(), range_bins_recall_all_classes.items()):
             plt.figure()
-            bar1 = plt.bar(x , [x[class_graph] for x in v_p[:n_bins]], bar_width, color='b')
-            bar2 = plt.bar(x+10 , [x[class_graph] for x in v_r[:n_bins]], bar_width, color='g')
+            bar1 = plt.bar(x , [x[class_graph] for x in v_p[:n_bins]], bar_width, color='b', label='p')
+            bar2 = plt.bar(x+10 , [x[class_graph] for x in v_r[:n_bins]], bar_width, color='g', label='r')
 
             plt.xticks(x, (x/100).astype('int'))
-            if bool(range_bins_support):
-                for ix, rect in enumerate(bar1):
-                    height = rect.get_height()
-                    plt.text(rect.get_x() + rect.get_width() / 2.0, height, 'p/r', ha='center', va='bottom')
+
+            # if bool(range_bins_support):
+            #     for ix, rect in enumerate(bar1):
+            #         height = rect.get_height()
+            #         plt.text(rect.get_x() + rect.get_width() / 2.0, height, 'p/r', ha='center', va='bottom')
 
             # plt.legend()
             # plt.tight_layout()
@@ -237,7 +238,8 @@ def range_bar_plot(n_bins, range_bins, save_dir, bar_width = 25, range_bins_supp
         if bool(range_bins_support):
             for ix, rect in enumerate(bar1):
                 height = rect.get_height()
-                plt.text(rect.get_x() + rect.get_width() / 2.0, height, f'{range_bins_support[k][ix]:.0f}', ha='center', va='bottom')
+                plt.text(rect.get_x() + rect.get_width() / 2.0, height,
+                         f'{range_bins_support[k][ix]:.0f}', ha='center', va='bottom')
 
         # plt.legend()
         # plt.tight_layout()
