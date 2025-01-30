@@ -681,12 +681,15 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 file_name = fname.split('/')[-1]
                 if not (df['tir_frame_image_file_name'] == file_name).any():
                         print('File name {} metadata hasnt found !!!'. format(file_name))
-                self.df_metadata.loc[len(self.df_metadata)] = [df[df['tir_frame_image_file_name'] == file_name]['sensor_type'].item(),
-                                                     df[df['tir_frame_image_file_name'] == file_name]['part_in_day'].item(),
-                                                     df[df['tir_frame_image_file_name'] == file_name]['weather_condition'].item(),
-                                                     df[df['tir_frame_image_file_name'] == file_name]['country'].item(),
-                                                     df[df['tir_frame_image_file_name'] == file_name]['train_state'].item(),
-                                                     df[df['tir_frame_image_file_name'] == file_name]['tir_frame_image_file_name'].item()]
+                try:
+                    self.df_metadata.loc[len(self.df_metadata)] = [df[df['tir_frame_image_file_name'] == file_name]['sensor_type'].item(),
+                                                         df[df['tir_frame_image_file_name'] == file_name]['part_in_day'].item(),
+                                                         df[df['tir_frame_image_file_name'] == file_name]['weather_condition'].item(),
+                                                         df[df['tir_frame_image_file_name'] == file_name]['country'].item(),
+                                                         df[df['tir_frame_image_file_name'] == file_name]['train_state'].item(),
+                                                         df[df['tir_frame_image_file_name'] == file_name]['tir_frame_image_file_name'].item()]
+                except Exception as e:
+                    print(f'{fname} fname WARNING: Ignoring corrupted image and/or label {file_name}: {e}')
 
 
 

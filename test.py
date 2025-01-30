@@ -175,8 +175,13 @@ def test(data,
         for daytime in pd.unique(dataloader.dataset.df_metadata['part_in_day']):
             exec('stats_all_time_{}'.format(daytime.lower()) + '=[]')  # 'stats_all_day'
 
+        for weather_condition in pd.unique(dataloader.dataset.df_metadata['weather_condition']):
+            if isinstance(weather_condition, str):
+                exec('stats_all_weather_condition_{}'.format(weather_condition.lower()) + '=[]')  # 'stats_all_day'
+
         sensor_type_vars = [key for key in vars().keys() if 'stats_all_sensor_type' in key and not '_with_range' in key]
         time_vars = [key for key in vars().keys() if 'stats_all_time' in key and not '_with_range' in key]
+        weather_condition_vars = [key for key in vars().keys() if 'stats_all_weather_condition' in key and not '_with_range' in key]
 
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
         img = img.to(device, non_blocking=True)
@@ -342,6 +347,10 @@ def test(data,
 
                 #     sensor type
                 if dataloader.dataset.use_csv_meta_data_file:
+                    weather_condition = (dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['weather_condition'].item())
+                    if isinstance(weather_condition, str):
+                        weather_condition = weather_condition.lower()
+                        exec([x for x in weather_condition_vars if str(weather_condition) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
 
                     time_in_day = dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['part_in_day'].item().lower()
                     # eval([x for x in time_vars if str(time_in_day) in x][0]).append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
@@ -399,6 +408,9 @@ def test(data,
                 exec('{}=[np.concatenate(x, 0) for x in zip(*{})]'.format(sensor_type, sensor_type))  # 'stats_all_50'
                 exec('{}_with_range=[np.concatenate(x, 0) for x in zip(*{}_with_range)]'.format(sensor_type, sensor_type))  # 'stats_all_50'
 
+            for weather_condition in weather_condition_vars:
+                exec('{}=[np.concatenate(x, 0) for x in zip(*{})]'.format(weather_condition, weather_condition))  # 'stats_all_50'
+
     if len(stats) and stats[0].any(): # P, R @  # max F1 index if any correct prediction
         p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
         ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
@@ -428,6 +440,15 @@ def test(data,
 
                     exec("ap50_{}, ap_{} = ap_{}[:, 0], ap_{}.mean(1)".format(time_var, time_var, time_var, time_var))
                     exec("mp_{}, mr_{}, map50_{}, map_{} = p_{}.mean(), r_{}.mean(), ap50_{}.mean(), ap_{}.mean()".format(time_var, time_var, time_var, time_var, time_var, time_var, time_var, time_var))
+
+                for weather_condition in weather_condition_vars:
+                    exec("nt_{} = np.bincount({}[3].astype(np.int64), minlength={})".format(weather_condition, weather_condition, nc))
+                    exec("p_{}, r_{}, ap_{}, f1_{}, ap_class_{} = ap_per_class(*{}, plot={}, v5_metric={}, save_dir={}, names={}, tag={}, class_support=nt_{})".format(weather_condition,
+                                    weather_condition, weather_condition, weather_condition, weather_condition, weather_condition, plots, v5_metric, 'str(save_dir)', names, 'str(weather_condition)', weather_condition))
+
+                    exec("ap50_{}, ap_{} = ap_{}[:, 0], ap_{}.mean(1)".format(weather_condition, weather_condition, weather_condition, weather_condition))
+                    exec("mp_{}, mr_{}, map50_{}, map_{} = p_{}.mean(), r_{}.mean(), ap50_{}.mean(), ap_{}.mean()".format(weather_condition, weather_condition,
+                                                            weather_condition, weather_condition, weather_condition, weather_condition, weather_condition, weather_condition))
 
             if 0 : #debug
                 ranges100_pred = np.array([])
