@@ -200,8 +200,8 @@ def range_p_r_bar_plot(n_bins:int, range_bins_precision_all_classes:dict, range_
         x = 100 * np.arange(n_bins) + 100
         for (k_p, v_p), (k_r, v_r) in zip(range_bins_precision_all_classes.items(), range_bins_recall_all_classes.items()):
             plt.figure()
-            bar1 = plt.bar(x , [x[class_graph] for x in v_p[:n_bins]], bar_width, color='b', label='p')
-            bar2 = plt.bar(x+10 , [x[class_graph] for x in v_r[:n_bins]], bar_width, color='g', label='r')
+            bar1 = plt.bar(x-bar_width , [x[class_graph] for x in v_p[:n_bins]], bar_width, color='b', label='p')
+            bar2 = plt.bar(x-bar_width//2 , [x[class_graph] for x in v_r[:n_bins]], bar_width, color='g', label='r')
 
             plt.xticks(x, (x/100).astype('int'))
 
@@ -210,13 +210,13 @@ def range_p_r_bar_plot(n_bins:int, range_bins_precision_all_classes:dict, range_
             #         height = rect.get_height()
             #         plt.text(rect.get_x() + rect.get_width() / 2.0, height, 'p/r', ha='center', va='bottom')
 
-            # plt.legend()
+            plt.legend()
             # plt.tight_layout()
             # plt.ylim([0.0, 1.05])
             plt.ylabel('P/R')
             plt.xlabel('Range[x100m]')
             plt.grid()
-            plt.title('Sensor {}mm Precision/Recall vs. range class: {} conf: {}'.format(k_p, str(names[class_graph]), conf))
+            plt.title('Sensor {}mm Precision/Recall vs. range. Class: {} conf: {}'.format(k_p, str(names[class_graph]), conf))
             # plt.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
             plt.savefig(os.path.join(save_dir, 'p_r_distribution_distance_sensor_' + str(k_p) + '_class_' + str(names[class_graph]) +'.png'), dpi=250)
             plt.clf()

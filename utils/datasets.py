@@ -677,6 +677,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if self.use_csv_meta_data_file:
             df = load_csv_xls_2_df(self.csv_meta_data_file)
             self.df_metadata = pd.DataFrame(columns=['sensor_type', 'part_in_day', 'weather_condition', 'country', 'train_state', 'tir_frame_image_file_name'])
+            # TODO :HK @@ itereate         tqdm(zip(self.img_files, self.label_files) and upon --force-csv-list remove missing entries in the csv from train/test lists!!!
             for ix, fname in enumerate(self.img_files):
                 file_name = fname.split('/')[-1]
                 if not (df['tir_frame_image_file_name'] == file_name).any():
@@ -720,13 +721,18 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                             segments = [np.array(x[1:], dtype=np.float32).reshape(-1, 2) for x in l]  # (cls, xy1...)
                             l = np.concatenate((classes.reshape(-1, 1), segments2boxes(segments)), 1)  # (cls, xywh)
                         l = np.array(l, dtype=np.float32)
+                        # if (l[:, 0].max() >= num_cls):
+                        #     print('ka', i, l, lb_file, im_file)
+                        l = np.array([lbl for lbl in l if lbl[0] < num_cls]) # take only labels index upto num of classes and omit others
+
                     if len(l):
                         assert l.shape[1] == 5, 'labels require 5 columns each'  #@@HK TODO adding truncation ratio increase here  : assert l.shape[1] == 6,
                         assert (l >= 0).all(), 'negative labels'
                         assert (l[:, 1:] <= 1).all(), 'non-normalized or out of bounds coordinate labels'
                         assert np.unique(l, axis=0).shape[0] == l.shape[0], 'duplicate labels'
-                        l = np.array([lbl for lbl in l if lbl[0] < num_cls]) # take only labels index upto num of classes and omit others
-                        # assert if (l[:, 0].max() < num_cls), 'class label out of range -- invalid' # max label can't be greater than num of labels
+                        assert (l[:, 0].max() < num_cls), 'class label out of range -- invalid' # max label can't be greater than num of labels
+                        # print(l[:, 0])
+
 
                     else:
                         ne += 1  # label empty

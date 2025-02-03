@@ -21,7 +21,7 @@ from utils.general import labels_to_class_weights, increment_path, labels_to_ima
 from utils.metrics import ap_per_class
 from utils.general import box_iou
 from utils.plots import plot_one_box
-
+import pickle
 import os
 from utils.general import xywh2xyxy
 from collections import defaultdict
@@ -591,7 +591,9 @@ def main(opt):
         tta_res = dict()
         tta_res['predictions'] = predictions
         tta_res['ground_truths'] = ground_truths
-        tta_res['iou_threshold'] = iou_threshold
+        tta_res['iou_threshold'] = opt.iou_thres
+        tta_res['conf_thres'] = opt.conf_thres
+        np.savetxt(os.path.join(opt.save_path,"image_preprocessed.csv"), img[0,:,:,0], delimiter=",")
         with open(os.path.join(opt.save_path,  'metadata_for_pre_re_detection_threshold_' + str(det_threshold) + '.pkl'), 'wb') as f:
             pickle.dump(tta_res, f)
 
@@ -692,8 +694,12 @@ if __name__ == '__main__':
     Plotting P/R curve over detections th=0.05
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.05  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt      
 
-    DEtections only New model Yolov7999  
+Detection
     --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.66  --iou-thres 0.6 --norm-type single_image_percentile_0_1 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run --detection-no-gt --adding-ext-noise
+
+
+    DEtections only New model Yolov7999  with noise addition
+    --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.48  --iou-thres 0.6 --norm-type single_image_percentile_0_1 --images-parent-folder /mnt/Data/hanoch/tir_frames_rois/onnx_bm --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run --detection-no-gt
 P/R curve 
     --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.01  --iou-thres 0.6 --norm-type single_image_percentile_0_1  --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run/P_R_curve_test_set --adding-ext-noise
     """

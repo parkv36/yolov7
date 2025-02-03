@@ -347,21 +347,47 @@ def test(data,
 
                 #     sensor type
                 if dataloader.dataset.use_csv_meta_data_file:
-                    weather_condition = (dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['weather_condition'].item())
-                    if isinstance(weather_condition, str):
-                        weather_condition = weather_condition.lower()
-                        exec([x for x in weather_condition_vars if str(weather_condition) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
+                    try:
+
+                        weather_condition = (dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['weather_condition'].item())
+                        if isinstance(weather_condition, str):
+                            weather_condition = weather_condition.lower()
+                            exec([x for x in weather_condition_vars if str(weather_condition) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
+                    except Exception as e:
+                        print(f'{weather_condition} fname WARNING: Ignoring corrupted image and/or label {weather_condition}: {e}')
 
                     time_in_day = dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['part_in_day'].item().lower()
                     # eval([x for x in time_vars if str(time_in_day) in x][0]).append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
                     exec([x for x in time_vars if str(time_in_day) in x][0] + '.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))')
 
                     sensor_type = dataloader.dataset.df_metadata[dataloader.dataset.df_metadata['tir_frame_image_file_name'] == str(path).split('/')[-1]]['sensor_type'].item()
-                    obj_range_m = torch.tensor(
-                        [(object_size_to_range(obj_height_pixels=h.cpu(), focal=sensor_type, class_id=class_id.cpu().numpy().item()))
-                         for class_id, (x, y, w, h) in zip(pred[:, 5], xyxy2xywh(pred[:, :4]))])
+                    # obj_range_m = torch.tensor(
+                    #     [(object_size_to_range(obj_height_pixels=h.cpu(), focal=sensor_type, class_id=class_id.cpu().numpy().item()))
+                    #      for class_id, (x, y, w, h) in zip(pred[:, 5], xyxy2xywh(pred[:, :4]))])
                     gt_range = [(object_size_to_range(obj_height_pixels=h, focal=sensor_type, class_id=class_id.numpy().item())) for
                                 class_id, (x, y, w, h) in zip(labels[:, 0].cpu(), labels[:, 1:5].cpu())]
+
+                    # coupling the range cell between any overlapped IOU >TH between pred bbox and GT bbox
+                    obj_range_m = list()
+                    i = 0
+                    for class_id_pred, (x1_p, y1_p, x2_p, y2_p) in zip(pred[:, 5].cpu(), pred[:, :4].cpu()):
+
+                        range_candidate = torch.tensor(
+                            object_size_to_range(obj_height_pixels=xyxy2xywh(pred[:, :4])[0][-1].cpu(),
+                                                 focal=sensor_type,
+                                                 class_id=class_id_pred.cpu().numpy().item()))
+                        # Find any IOU overlapped between GT and prediction
+                        for class_id_gt, (x1_gt, y1_gt, x2_gt, y2_gt), (xc,yc,w,h) in zip(labels[:, 0].cpu(),
+                                                                             xywh2xyxy(labels[:, 1:5].cpu()), labels[:, 1:5].cpu()):
+                            ious = box_iou(torch.tensor((x1_gt, y1_gt, x2_gt, y2_gt)).unsqueeze(axis=0), torch.tensor((x1_p, y1_p, x2_p, y2_p)).unsqueeze(axis=0))
+                            i += 1
+                            if ious > iouv.cpu()[0]: #
+                                range_candidate = torch.tensor(
+                                    object_size_to_range(obj_height_pixels=h.cpu(),
+                                                         focal=sensor_type,
+                                                         class_id=class_id_pred.cpu().numpy().item()))
+                                break  # the aligned GT/Pred was found no need to iterate more, this is the atmost candidate
+                        obj_range_m.append(range_candidate)
                     # else: #ranges = func(sqrt(height*width))
                     #     obj_range_m = torch.tensor([(object_size_to_range(obj_height_pixels=(np.sqrt(h.cpu()*w.cpu())), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(xyxy2xywh(pred[:, :4]))])
                     #     gt_range = [(object_size_to_range(obj_height_pixels=(np.sqrt(h*w)), focal=sensor_type)) for ix, (x, y, w, h) in enumerate(labels[:,1:5].cpu())]
@@ -490,6 +516,8 @@ def test(data,
                             nt_stat_list_per_range = np.array([0, 0])
                             r_stat_list_per_range = np.array([0, 0])
                             p_stat_list_per_range = np.array([0, 0])
+                            map50_per_range = np.array(0)
+
                             # ind = np.array([])
                             # exec('ind = np.where(ranges == rng_100)[0]')
                             ind = eval('np.where(ranges == rng_100)[0]')
@@ -515,14 +543,17 @@ def test(data,
                                     ap50_per_range, ap_per_range = ap_stat_list_per_range[:, 0], ap_stat_list_per_range.mean(1)  # AP@0.5, AP@0.5:0.95
                                     mp_per_range, mr_per_range, map50_per_range, map_per_range = p_stat_list_per_range.mean(), r_stat_list_per_range.mean(), ap50_per_range.mean(), ap_per_range.mean()
                             else:# no prediction at this range
-                                if not bool(gt_per_range_bins[sensor_focal][rng_100]):# there are GT but no pred
-                                    nt_stat_list_per_range = np.array([0,0])
-                                    r_stat_list_per_range = np.array([0,0])
-                                    p_stat_list_per_range = np.array([0,0])
-                                    fn = len(gt_per_range_bins[sensor_focal][rng_100])
-                                    recall = 0 # no TP 0/TP+FN
-                                    precision = 0
-                                    map50_per_range = np.array(0)
+                                r_stat_list_per_range = np.array([0, 0])
+                                p_stat_list_per_range = np.array([0, 0])
+                                fn = len(gt_per_range_bins[sensor_focal][rng_100])
+                                recall = 0  # no TP 0/TP+FN
+                                precision = 0
+                                map50_per_range = np.array(0)
+                                if not bool(gt_per_range_bins[sensor_focal][rng_100]):# there are no GT no pred
+                                    nt_stat_list_per_range = np.array([0,0])  # actual GT
+                                else:
+                                    nt_stat_list_per_range = np.array(gt_per_range_bins[sensor_focal][rng_100]).sum()
+                            # there are GT but no pred
                             # print(map50_per_range)
 
                             range_bins_map[sensor_focal][rng_100] = map50_per_range.item()
@@ -827,8 +858,18 @@ tir_tiff_w_center_roi_validation_set_train_cls_usa.txt
 
 # per day/nigh SY/ML
 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --conf 0.001 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6 --csv-metadata-path tir_od/tir_center_merged_seq_tiff_last_original_png.xlsx
+P/R
 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6 --csv-metadata-path tir_od/tir_center_merged_seq_tiff_last_original_png.xlsx --conf 0.65
+mAP:
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6 --csv-metadata-path tir_od/tir_center_merged_seq_tiff_last_original_png.xlsx --conf 0.01
 
+
+Fixed wether csv  P/R
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --csv-metadata-path tir_od/tir_tiff_seq_png_3_class_fixed_whether.xlsx --iou-thres 0.6  --conf 0.65
+
+
+FOG
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_fog_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --csv-metadata-path tir_od/tir_tiff_seq_png_3_class_fixed_whether.xlsx --conf 0.01 --iou-thres 0.6
 -------  Error analysis  ------------
 1st run with conf_th=0.0001 then observe the desired threshold, re-run with the desired threshold abd observe images with bboxes given the deired threshold 
 """
