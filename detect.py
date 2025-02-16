@@ -21,10 +21,10 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized,
 
 def detect(save_img=False):
     source, weights, view_img, save_txt, imgsz, trace = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace
-    save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
-    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
+    save_img = not opt.nosave #and not source.endswith('.txt')  # save inference images
+    webcam = source.isnumeric() or source.lower().startswith(  # removed HK or source.endswith('.txt')
         ('rtsp://', 'rtmp://', 'http://', 'https://'))
-
+    webcam = webcam and not source.endswith('.txt')
     # Directories
     save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
     (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
@@ -61,7 +61,8 @@ def detect(save_img=False):
         dataset = LoadImages(source, img_size=imgsz, stride=stride,
                              scaling_type=opt.norm_type, input_channels=opt.input_channels,
                              no_tir_signal=opt.no_tir_signal,
-                             tir_channel_expansion=opt.tir_channel_expansion)
+                             tir_channel_expansion=opt.tir_channel_expansion,
+                             rel_path_for_list_files=opt.rel_path_for_list_files)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -218,6 +219,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--save-path', default='', help='save to project/name')
 
+    parser.add_argument('--rel-path-for-list-files', default='/mnt/Data/hanoch/tir_frames_rois/yolo7_tir_data_all', help='')
+
+
 
     opt = parser.parse_args()
 
@@ -229,7 +233,6 @@ if __name__ == '__main__':
 
     print(opt)
     #check_requirements(exclude=('pycocotools', 'thop'))
-
     with torch.no_grad():
         if opt.update:  # update all models (to fix SourceChangeWarning)
             for opt.weights in ['yolov7.pt']:
@@ -237,6 +240,7 @@ if __name__ == '__main__':
                 strip_optimizer(opt.weights)
         else:
             detect()
+#  --source yolov7/tir_od/fog_data_set.txt
 
 """
 python detect.py --weights yolov7.pt --conf 0.25 --img-size 640 --source inference/images/horses.jpg

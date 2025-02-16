@@ -370,6 +370,18 @@ class TracedModel(nn.Module):
         print(" model is traced! \n")
 
     def forward(self, x, augment=False, profile=False):
-        out = self.model(x)
+        out = self.model(x)# feat = torch.mean(out[-1], dim=[2, 3])
+        self.features  = [x.clone().detach() for x in out]
         out = self.detect_layer(out)
         return out
+    # https://stackoverflow.com/questions/75319661/how-to-extract-and-visualize-feature-value-for-an-arbitrary-layer-during-inferen
+
+    """
+    def plot_ts_feature_maps(feature_maps, tag=''):
+        import matplotlib
+        feature_maps = feature_maps.to(torch.float32)
+        ts.show(feature_maps)
+        ts.save(feature_maps, '/home/hanoch/projects/tir_od/output/' + tag + '.jpg')   
+     
+    plot_ts_feature_maps(torch.mean(out[-1], dim=[2, 3]))
+    """

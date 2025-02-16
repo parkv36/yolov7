@@ -3,6 +3,7 @@ import logging
 import math
 import os
 import random
+import re
 import time
 from copy import deepcopy
 from pathlib import Path
@@ -20,7 +21,7 @@ from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
-import re
+
 import test  # import test.py to get mAP after each epoch
 
 try:
@@ -40,25 +41,26 @@ from models.yolo import Model
 from utils.autoanchor import check_anchors
 from utils.datasets import create_dataloader
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
-    fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_git_status, check_img_size, \
-    check_requirements, print_mutation, set_logging, one_cycle, colorstr
+    fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_img_size, \
+    print_mutation, set_logging, one_cycle, colorstr
 from utils.google_utils import attempt_download
 from utils.loss import ComputeLoss, ComputeLossOTA
-from utils.plots import plot_images, plot_labels, plot_results, plot_evolution
+from utils.plots import plot_images, plot_results, plot_evolution
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
 logger = logging.getLogger(__name__)
 clear_ml = True
 
-from clearml import Task, Logger
+from clearml import Task
 
 if clear_ml:  # clearml support
 
     task = Task.init(
             project_name="TIR_OD",
-            task_name="train yolov7 with dummy test"  # output_uri = True model torch.save will uploaded to file server or =/mnt/myfolder or AWS or Azure
-        )
+            task_name="train yolov7 'train' class"  # output_uri = True model torch.save will uploaded to file server or =/mnt/myfolder or AWS or Azure
+            # output_uri='azure://company.blob.core.windows.net/folder'
+    )
     # Task.execute_remotely() will invoke the job immidiately over the remote and not DeV
     task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
 #     clear_ml can capture graph like tensorboard
@@ -413,6 +415,7 @@ def train(hyp, opt, device, tb_writer=None):
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
+    class_inverse_freq = labels_to_class_weights(dataset.labels, nc).to(device)
     model.names = names
 
     # Start training
@@ -430,8 +433,14 @@ def train(hyp, opt, device, tb_writer=None):
     else:
         scaler = torch.amp.GradScaler("cuda", enabled=opt.amp) if is_torch_240 else torch.cuda.amp.GradScaler(enabled=opt.amp)
 
-    compute_loss_ota = ComputeLossOTA(model)  # init loss class
-    compute_loss = ComputeLoss(model)  # init loss class
+    loss_weight = torch.tensor([])
+    if opt.loss_weight:
+        loss_weight = class_inverse_freq
+    if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
+        compute_loss_ota = ComputeLossOTA(model, loss_weight=loss_weight)  # init loss class
+    else:
+        compute_loss = ComputeLoss(model, loss_weight=loss_weight)  # init loss class
+
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -448,6 +457,8 @@ def train(hyp, opt, device, tb_writer=None):
     if 0: # HK TODO remove later  The anomaly mode tells you about the nan. If you remove this and you have the nan error again, you should have an additional stack trace that tells you about the forward function (make sure to enable the anomaly mode before the you run the forward).
         torch.autograd.set_detect_anomaly(True)
 
+    print(100 * '==')
+    print('Training set labels {} count : {}'.format(names, torch.bincount(c.long(), minlength=nc) + 1))
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -479,8 +490,10 @@ def train(hyp, opt, device, tb_writer=None):
         optimizer.zero_grad()
 
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
+            # print(np.unique(targets, return_counts=True))
+            # print(np.bincount(targets[:,1].long(), minlength=nc))
             ni = i + nb * epoch  # number integrated batches (since train start) i.e. iterations
-            # imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0  @@HK TODO is that standartization ?
+
             imgs = imgs.to(device, non_blocking=True).float()
 
             # Warmup
@@ -504,7 +517,7 @@ def train(hyp, opt, device, tb_writer=None):
 
             with amp.autocast(enabled=cuda): # to decrease GPU VRAM turn off OTA loss see what happen HT TODO ::
             # with amp.autocast(enabled=(cuda and opt.amp)):
-                pred = model(imgs)  # forward
+                pred = model(imgs)  # forward [B, C, W,H, [bbox[4], objectness[1], class-conf[nc]]]
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
                     loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
                 else:
@@ -761,6 +774,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--csv-metadata-path', default='', help='save to project/name')
 
+    parser.add_argument('--loss-weight', action='store_true', help='weight the loss by 1/freq to compensate for imbalanced data')
+
+    parser.add_argument('--embed-analyse', action='store_true', help='')
+
 
     opt = parser.parse_args()
     # Only for clearML env
@@ -966,7 +983,8 @@ Overfit 640x640
 tir_od_overfit.yaml
 --workers 8 --device 0 --batch-size 32 --data data/tir_od_overfit.yaml --img-size 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od_v7_overfit.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.2 --cache-images
 
-
+# 3 classe renew yolov7999 list
+--workers 8 --device 0 --batch-size 24 --data data/tir_od_center_roi_aug_list_train_cls.yaml --img 640 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic_rnd_scaling_no_ota.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --gamma-aug-prob 0.1 --cache-images --image-weights
 #########################################################
 Extended model for higher resolution  YOLO7E6
 # --workers 8 --device 0 --batch-size 8 --data data/tir_od_center_roi_aug_list_full_res.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size [768, 1024] --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 2 --gamma-aug-prob 0.3 --cache-images --rect

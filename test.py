@@ -17,7 +17,7 @@ from utils.metrics import ap_per_class, ConfusionMatrix, range_bar_plot, range_p
 from utils.plots import plot_images, output_to_target, plot_study_txt, append_to_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
 import pandas as pd
-
+from yolo_object_embeddings import ObjectEmbeddingVisualizer
 
 def object_size_to_range(obj_height_pixels: float, focal:int, class_id:int=1):
     class_height = {0:1.5, 1:1.8} # car Sedan height = 1.5 m , person height is 1.8m
@@ -104,7 +104,7 @@ def test(data,
         log_imgs = min(wandb_logger.log_imgs, 100)
     # Dataloader
 
-
+    embed_analyse = kwargs.get('embed_analyse', False)
     if not training:
         if device.type != 'cpu':
             model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
@@ -123,12 +123,21 @@ def test(data,
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, hyp, pad=0.5, augment=False, rect=False, #rect was True  # HK@@@ TODO : why pad =0.5?? only effective in rect=True in test time ? https://github.com/ultralytics/ultralytics/issues/13271
                                        prefix=colorstr(f'{task}: '), rel_path_images=data['path'], num_cls=data['nc'])[0]
 
+        labels = np.concatenate(dataloader.dataset.labels, 0)
+        class_labels = torch.tensor(labels[:, 0])  # classes
+
+
     if v5_metric:
         print("Testing with YOLOv5 AP metric...")
     
     seen = 0
     confusion_matrix = ConfusionMatrix(nc=nc, conf=conf_thres, iou_thres=iou_thres) # HK per conf per iou_thresh
     names = {k: v for k, v in enumerate(model.names if hasattr(model, 'names') else model.module.names)}
+
+    if not training:
+        print(100 * '==')
+        print('Test set labels {} count : {}'.format(names, torch.bincount(class_labels.long(), minlength=nc) + 1))
+
     coco91class = coco80_to_coco91_class()
     s = ('%20s' + '%12s' * 6) % ('Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95')
     p, r, f1, mp, mr, map50, map, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
@@ -145,8 +154,12 @@ def test(data,
         'score'
     ])
 
-    stats_all_large, stats_person_medium = [], []
+    if embed_analyse:
+        obj_embed_viz = ObjectEmbeddingVisualizer(model=model, device=device)
+        features_acm = torch.empty((0, 1024)) # embedding dim of last scale 1024x20x20
+        labels_acm = np.array([])
 
+    stats_all_large, stats_person_medium = [], []
     if dataloader.dataset.use_csv_meta_data_file:
 
         n_bins_of100m = 20
@@ -209,8 +222,16 @@ def test(data,
             # out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=False) # Does thresholding for class  : list of detections, on (n,6) tensor per image [xyxy, conf, cls]
             t1 += time_synchronized() - t
 
+        if trace and embed_analyse and np.sum([x.numel() for x in out])>0: # features are being saved/clone in the trace model version only TODO for others
+            features, labels = obj_embed_viz.extract_object_grounded_features(feature_maps=model.features,
+                                                           predictions=out,
+                                                           image_shape=img.shape)
+            features_acm = torch.cat((features_acm, features.detach().cpu()), dim=0)
+            labels_acm = np.concatenate((labels_acm, labels), axis=0)
+
         # Statistics per image
         for si, pred in enumerate(out): # [bbox_coors, objectness_logit, class]
+
             labels = targets[targets[:, 0] == si, 1:]
             nl = len(labels)
             tcls = labels[:, 0].tolist() if nl else []  # target class
@@ -422,6 +443,11 @@ def test(data,
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+    if trace and embed_analyse:
+        embeddings = obj_embed_viz.visualize_object_embeddings(features_acm,
+                                                               labels_acm,
+                                                               path=save_dir,
+                                                               tag=opt.conf_thres)
 
     if not training or 1:
         stats_person_medium = [np.concatenate(x, 0) for x in zip(*stats_person_medium)]  # to numpy
@@ -782,6 +808,9 @@ if __name__ == '__main__':
 
     parser.add_argument('--csv-metadata-path', default='', help='save to project/name')
 
+    parser.add_argument('--embed-analyse', action='store_true', help='')
+
+
     opt = parser.parse_args()
 
     if opt.tir_channel_expansion: # operates over 3 channels
@@ -812,7 +841,8 @@ if __name__ == '__main__':
              save_conf=opt.save_conf,
              trace=not opt.no_trace,
              v5_metric=opt.v5_metric,
-             hyp=hyp)
+             hyp=hyp,
+             embed_analyse=opt.embed_analyse)
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:
@@ -867,9 +897,12 @@ mAP:
 Fixed wether csv  P/R
 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --csv-metadata-path tir_od/tir_tiff_seq_png_3_class_fixed_whether.xlsx --iou-thres 0.6  --conf 0.65
 
-
 FOG
---weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_fog_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --csv-metadata-path tir_od/tir_tiff_seq_png_3_class_fixed_whether.xlsx --conf 0.01 --iou-thres 0.6
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_fog_set.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --csv-metadata-path tir_od/tir_tiff_seq_png_3_class_fixed_whether.xlsx --conf 0.65 --iou-thres 0.6
+
+Locomotive
+
+--weights /mnt/Data/hanoch/runs/train/yolov71107/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set_3_class_train.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6  --conf 0.1 --embed-analyse
 -------  Error analysis  ------------
 1st run with conf_th=0.0001 then observe the desired threshold, re-run with the desired threshold abd observe images with bboxes given the deired threshold 
 """

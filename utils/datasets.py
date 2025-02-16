@@ -237,7 +237,8 @@ class _RepeatSampler(object):
 class LoadImages:  # for inference
     def __init__(self, path, img_size=640, stride=32,
                  scaling_type='standardization', img_percentile_removal=0.3, beta=0.3, input_channels=3,
-                 tir_channel_expansion=False, no_tir_signal=False):
+                 tir_channel_expansion=False, no_tir_signal=False,
+                 rel_path_for_list_files=''):
 
         p = str(Path(path).absolute())  # os-agnostic absolute path
         if '*' in p:
@@ -245,7 +246,11 @@ class LoadImages:  # for inference
         elif os.path.isdir(p):
             files = sorted(glob.glob(os.path.join(p, '*.*')))  # dir
         elif os.path.isfile(p):
-            files = [p]  # files
+            if path.endswith('.txt'):
+                files = self.parse_image_file_names(path, rel_path_for_list_files)
+
+            else:
+                files = [p]  # files
         else:
             raise Exception(f'ERROR: {p} does not exist')
 
@@ -273,6 +278,36 @@ class LoadImages:  # for inference
         self.tir_channel_expansion = tir_channel_expansion
         self.is_tir_signal = not (no_tir_signal)
 
+    def parse_image_file_names(self, path, rel_path_for_list_files):
+        try:
+            f = []  # image files
+            for p in path if isinstance(path, list) else [path]:
+                p = Path(p)  # os-agnostic
+                if p.is_dir():  # dir
+                    f += glob.glob(str(p / '**' / '*.*'), recursive=True)
+                    # f = list(p.rglob('**/*.*'))  # pathlib
+                elif p.is_file():  # file
+                    with open(p, 'r') as t:
+                        t = t.read().strip().splitlines()
+                        parent = str(p.parent) + os.sep
+                        if bool(rel_path_for_list_files):
+                            f += [os.path.join(rel_path_for_list_files, x.replace('./', '')).rstrip() if x.startswith(
+                                './') else x for x
+                                  in t]  # local to global path
+                        else:
+                            f += [x.replace('./', parent).rstrip() if x.startswith('./') else x for x in
+                                  t]  # local to global path
+
+                        # f += [p.parent / x.lstrip(os.sep) for x in t]  # local to global path (pathlib)
+                else:
+                    raise Exception(f'{p} does not exist')
+            self.img_files = sorted(
+                [x.replace('/', os.sep) for x in f if x.split('.')[-1].lower() in img_formats])
+            # self.img_files = sorted([x for x in f if x.suffix[1:].lower() in img_formats])  # pathlib
+            assert self.img_files, f' No images found'
+        except Exception as e:
+            raise Exception(f'Error loading data from {path}: {e}\nSee {help_url}')
+        return f
 
     def __iter__(self):
         self.count = 0
@@ -677,7 +712,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         if self.use_csv_meta_data_file:
             df = load_csv_xls_2_df(self.csv_meta_data_file)
             self.df_metadata = pd.DataFrame(columns=['sensor_type', 'part_in_day', 'weather_condition', 'country', 'train_state', 'tir_frame_image_file_name'])
-            # TODO :HK @@ itereate         tqdm(zip(self.img_files, self.label_files) and upon --force-csv-list remove missing entries in the csv from train/test lists!!!
+            # TODO :HK @@ itereate         tqdm(zip(self.img_files, self.label_files) and upon --force-csv-list remove missing entries from the csv in train/test lists!!!
             for ix, fname in enumerate(self.img_files):
                 file_name = fname.split('/')[-1]
                 if not (df['tir_frame_image_file_name'] == file_name).any():

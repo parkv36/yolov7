@@ -12,7 +12,7 @@ test: ./yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt #Test51a_Test40A_tes
 #test: ./tir_od/test-dev2017.txt  # 20288 of 40670 images, submit to https://competitions.codalab.org/competitions/20794
 
 # number of classes
-nc: 2
+nc: 3
 
 # class names
-names: ['car', 'person']
+names: ['car', 'person', 'train']

@@ -147,7 +147,17 @@ class FocalLoss(nn.Module):
         else:  # 'none'
             return loss
 
+"""
+https://github.com/ultralytics/ultralytics/issues/10406
+Define a list of alpha values:
 
+alpha_list = [0.25, 0.5, 0.75]  # Example alpha values for three classes
+Modify the focal loss calculation in your model’s loss function:
+
+alpha_factor = torch.tensor([alpha_list[i] for i in labels]).to(device)
+alpha_factor = alpha_factor * labels + (1 - alpha_factor) * (1 - labels)
+loss *= alpha_factor
+"""
 class QFocalLoss(nn.Module):
     # Wraps Quality focal loss around existing loss_fcn(), i.e. criteria = FocalLoss(nn.BCEWithLogitsLoss(), gamma=1.5)
     def __init__(self, loss_fcn, gamma=1.5, alpha=0.25):
@@ -421,7 +431,7 @@ class APLoss(torch.autograd.Function):
 # Dual obj and cls losses and outputs inherited from Joseph Redmon's original YOLOv3
 class ComputeLoss:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, model, autobalance=False, loss_weight=torch.tensor([])):
         super(ComputeLoss, self).__init__()
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
@@ -429,14 +439,17 @@ class ComputeLoss:
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
-
+        self.loss_weight = loss_weight
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
         self.cp, self.cn = smooth_BCE(eps=h.get('label_smoothing', 0.0))  # positive, negative BCE targets
 
         # Focal loss
         g = h['fl_gamma']  # focal loss gamma
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            alpha = 0.25 # default by base code
+            if loss_weight.numel()>0:
+                alpha = loss_weight # Overide the default from the paper
+            BCEcls, BCEobj = FocalLoss(BCEcls, g, alpha=alpha), FocalLoss(BCEobj, g)
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
@@ -555,11 +568,12 @@ class ComputeLoss:
 
 class ComputeLossOTA:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, model, autobalance=False, loss_weight=torch.tensor([])):
         super(ComputeLossOTA, self).__init__()
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
-
+        if loss_weight.numel() > 0:
+            raise ValueError('Not imp. yet')
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
