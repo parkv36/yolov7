@@ -436,10 +436,8 @@ def train(hyp, opt, device, tb_writer=None):
     loss_weight = torch.tensor([])
     if opt.loss_weight:
         loss_weight = class_inverse_freq
-    if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
-        compute_loss_ota = ComputeLossOTA(model, loss_weight=loss_weight)  # init loss class
-    else:
-        compute_loss = ComputeLoss(model, loss_weight=loss_weight)  # init loss class
+    compute_loss_ota = ComputeLossOTA(model, loss_weight=loss_weight)  # init loss class
+    compute_loss = ComputeLoss(model, loss_weight=loss_weight)  # init loss class
 
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
@@ -597,6 +595,7 @@ def train(hyp, opt, device, tb_writer=None):
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
 
+            model_name = str(opt.weights)[str(opt.weights).find('yolo'):].split('/')[0]
 
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
@@ -615,7 +614,8 @@ def train(hyp, opt, device, tb_writer=None):
                                                  compute_loss=compute_loss,
                                                  is_coco=is_coco,
                                                  v5_metric=opt.v5_metric,
-                                                 hyp=hyp)
+                                                 hyp=hyp,
+                                                 model_name=model_name)
 
             # Write
             with open(results_file, 'a') as f:
@@ -633,6 +633,8 @@ def train(hyp, opt, device, tb_writer=None):
                     tb_writer.add_scalar(tag, x, epoch)  # tensorboard
                 if wandb_logger.wandb:
                     wandb_logger.log({tag: x})  # W&B
+            for i, val in enumerate(maps):
+                tb_writer.add_scalar(f'map_50% class {names[i]}', val, ni)
 
             # Update best mAP
             fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
@@ -981,7 +983,7 @@ FT : you need the --cfg of arch yaml because nc-classes are changing
 
 Overfit 640x640
 tir_od_overfit.yaml
---workers 8 --device 0 --batch-size 32 --data data/tir_od_overfit.yaml --img-size 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od_v7_overfit.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.2 --cache-images
+--workers 8 --device 0 --batch-size 32 --data data/tir_od_overfit.yaml --img-size 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od_v7_overfit.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.1 --cache-images
 
 # 3 classe renew yolov7999 list
 --workers 8 --device 0 --batch-size 24 --data data/tir_od_center_roi_aug_list_train_cls.yaml --img 640 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic_rnd_scaling_no_ota.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --gamma-aug-prob 0.1 --cache-images --image-weights

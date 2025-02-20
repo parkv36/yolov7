@@ -105,6 +105,7 @@ def test(data,
     # Dataloader
 
     embed_analyse = kwargs.get('embed_analyse', False)
+    model_name = kwargs.get('model_name', '')
     if not training:
         if device.type != 'cpu':
             model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
@@ -125,6 +126,12 @@ def test(data,
 
         labels = np.concatenate(dataloader.dataset.labels, 0)
         class_labels = torch.tensor(labels[:, 0])  # classes
+
+        with open(save_dir / 'opt.yaml', 'w') as f:
+            yaml.dump(vars(opt), f, sort_keys=False)
+        with open(save_dir / 'hyp.yaml', 'w') as f:
+            yaml.dump(hyp, f, sort_keys=False)
+
 
 
     if v5_metric:
@@ -463,11 +470,12 @@ def test(data,
             for weather_condition in weather_condition_vars:
                 exec('{}=[np.concatenate(x, 0) for x in zip(*{})]'.format(weather_condition, weather_condition))  # 'stats_all_50'
 
-    if len(stats) and stats[0].any(): # P, R @  # max F1 index if any correct prediction
-        p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir, names=names) #based on correct @ IOU=0.5 of pred box with target
+    if len(stats) and stats[0].any():
+        nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
+        p, r, ap, f1, ap_class = ap_per_class(*stats, plot=plots, v5_metric=v5_metric, save_dir=save_dir,
+                            names=names, class_support=nt, tag=model_name) #based on correct @ IOU=0.5 of pred box with target
         ap50, ap = ap[:, 0], ap.mean(1)  # AP@0.5, AP@0.5:0.95
         mp, mr, map50, map = p.mean(), r.mean(), ap50.mean(), ap.mean()
-        nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
 
 
         # if bool(stats_person_medium):
@@ -825,6 +833,8 @@ if __name__ == '__main__':
     #check_requirements()
     hyp = dict()
 
+    model_name = str(opt.weights)[str(opt.weights).find('yolo'):].split('/')[0]
+
     if opt.task in ('train', 'val', 'test'):  # run normally
         test(opt.data,
              opt.weights,
@@ -842,7 +852,8 @@ if __name__ == '__main__':
              trace=not opt.no_trace,
              v5_metric=opt.v5_metric,
              hyp=hyp,
-             embed_analyse=opt.embed_analyse)
+             embed_analyse=opt.embed_analyse,
+             model_name=model_name)
 
     elif opt.task == 'speed':  # speed benchmarks
         for w in opt.weights:
@@ -903,6 +914,8 @@ FOG
 Locomotive
 
 --weights /mnt/Data/hanoch/runs/train/yolov71107/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set_3_class_train.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6  --conf 0.1 --embed-analyse
+
+--weights /mnt/Data/hanoch/runs/train/yolov71133/weights/best.pt --device 0 --batch-size 16 --data data/tir_od_test_set_3_class_train.yaml --img-size 640 --verbose --norm-type single_image_percentile_0_1 --input-channels 1 --project test --task test --iou-thres 0.6 --conf 0.4
 -------  Error analysis  ------------
 1st run with conf_th=0.0001 then observe the desired threshold, re-run with the desired threshold abd observe images with bboxes given the deired threshold 
 """

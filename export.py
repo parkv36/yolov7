@@ -4,7 +4,7 @@ import time
 import warnings
 
 import numpy as np
-
+import os
 sys.path.append('./')  # to run '$ python *.py' files in subdirectories
 
 import torch
@@ -55,6 +55,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--flip-channel-from-tf-to-pt', action='store_false', help='')
 
+    parser.add_argument('--reorder-output-class-to-viz-od', action='store_true', help='') #  "person": 0, "car": 1,   "bike": 2,   "animal": 3, "locomotive": 4, "braking_shoe": 5
 
 
     opt = parser.parse_args()
@@ -125,10 +126,10 @@ if __name__ == '__main__':
     # TorchScript export
     try:
         print('\nStarting TorchScript export with torch %s...' % torch.__version__)
-        f = opt.weights.replace('.pt', '.torchscript.pt')  # filename
+        fname = opt.weights.replace('.pt', '.torchscript.pt')  # filename
         ts = torch.jit.trace(model, img, strict=False)
-        ts.save(f)
-        print('TorchScript export success, saved as %s' % f)
+        ts.save(fname)
+        print('TorchScript export success, saved as %s' % fname)
     except Exception as e:
         print('TorchScript export failure: %s' % e)
 
@@ -149,7 +150,7 @@ if __name__ == '__main__':
                 else:
                     print('quantization only supported on macOS, skipping...')
 
-            f = opt.weights.replace('.pt', '.mlmodel')  # filename
+            fname = opt.weights.replace('.pt', '.mlmodel')  # filename
             ct_model.save(f)
             print('CoreML export success, saved as %s' % f)
         except Exception as e:
@@ -158,11 +159,11 @@ if __name__ == '__main__':
     # TorchScript-Lite export
     try:
         print('\nStarting TorchScript-Lite export with torch %s...' % torch.__version__)
-        f = opt.weights.replace('.pt', '.torchscript.ptl')  # filename
+        fname = opt.weights.replace('.pt', '.torchscript.ptl')  # filename
         tsl = torch.jit.trace(model, img, strict=False)
         tsl = optimize_for_mobile(tsl)
-        tsl._save_for_lite_interpreter(f)
-        print('TorchScript-Lite export success, saved as %s' % f)
+        tsl._save_for_lite_interpreter(fname)
+        print('TorchScript-Lite export success, saved as %s' % fname)
     except Exception as e:
         print('TorchScript-Lite export failure: %s' % e)
 
@@ -171,7 +172,7 @@ if __name__ == '__main__':
         import onnx
 
         print('\nStarting ONNX export with onnx %s...' % onnx.__version__)
-        f = opt.weights.replace('.pt', '.onnx')  # filename
+        fname = opt.weights.replace('.pt', '.onnx')  # filename
         model.eval()
         output_names = ['classes', 'boxes'] if y is None else ['output']
         dynamic_axes = None
@@ -199,7 +200,10 @@ if __name__ == '__main__':
         if opt.grid:
             if opt.end2end:
                 print('\nStarting export end2end onnx model for %s...' % 'TensorRT' if opt.max_wh is None else 'onnxruntime')
-                model = End2End(model, opt.topk_all, opt.iou_thres, opt.conf_thres, opt.max_wh, device, len(labels))
+                model = End2End(model=model, max_obj=opt.topk_all, iou_thres=opt.iou_thres, score_thres=opt.conf_thres,
+                                max_wh=opt.max_wh, device=device, n_classes=len(labels),
+                                reorder_output_class_to_viz_od=opt.reorder_output_class_to_viz_od)
+
                 if opt.end2end and opt.max_wh is None:
                     if 1:  # Efficinet NMS TRT Yuval patch
                         model = End2EndRVFillOutput_TRT(model=model, device=device)
@@ -228,13 +232,26 @@ if __name__ == '__main__':
         print("onnx:")
         print(img.shape)
 
-        torch.onnx.export(model, img, f, verbose=False, opset_version=12, input_names=['images'],
+        if opt.reorder_output_class_to_viz_od:
+            fname = os.path.join(os.path.dirname(fname), os.path.basename(fname).split('onnx')[0] + 'person_cls_0.onnx')
+
+        torch.onnx.export(model, img, fname, verbose=False, opset_version=12, input_names=['images'],
                           output_names=output_names,
                           dynamic_axes=dynamic_axes)
 
         # Checks
-        onnx_model = onnx.load(f)  # load onnx model
+        onnx_model = onnx.load(fname)  # load onnx model
         onnx.checker.check_model(onnx_model)  # check onnx model
+
+        # import onnxruntime as ort
+        # cuda = [True if torch.cuda.is_available() else False][0]
+        # providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if cuda else ['CPUExecutionProvider']
+        # session = ort.InferenceSession(fname, providers=providers)
+        # input_shape = session.get_inputs()[0].shape
+        # outname = [i.name for i in session.get_outputs()]
+        # inname = [i.name for i in session.get_inputs()]
+        # inp = {inname[0]: img.cpu().numpy()}
+        # output2 = session.run(outname, inp)
 
         if opt.end2end and opt.max_wh is None:
             for i in onnx_model.graph.output:
@@ -261,15 +278,15 @@ if __name__ == '__main__':
                 print(f'Simplifier failure: {e}')
 
         # print(onnx.helper.printable_graph(onnx_model.graph))  # print a human readable model
-        onnx.save(onnx_model, f)
-        print('ONNX export success, saved as %s' % f)
+        onnx.save(onnx_model, fname)
+        print('ONNX export success, saved as %s' % fname)
 
         if opt.max_wh is not None and 0:
             if opt.include_nms:
                 print('Registering NMS plugin for ONNX...')
-                mo = RegisterNMS(f)
+                mo = RegisterNMS(fname)
                 mo.register_nms(score_thresh=0.66, nms_thresh=0.6)  #/mnt/Data/hanoch/runs/train/yolov7800_11/weights/epoch_099.onnx
-                mo.save(f)
+                mo.save(fname)
 
     except Exception as e:
         print('ONNX export failure: %s' % e)
@@ -294,5 +311,9 @@ pip install onnxruntime-gpu
 desired is nms_ort
 None instead 640 not taking the TRT but ORT (nms of NVIDIA)
 
+--include-nms --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --batch-size 1 --end2end --grid --conf-thres 0.1 --iou-thres 0.6 --simplify --max-wh 640
+# reorder outputs
+
+--include-nms --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --batch-size 1 --end2end --grid --conf-thres 0.1 --iou-thres 0.6 --simplify --max-wh 640 --reorder-output-class-to-viz-od
 
 """

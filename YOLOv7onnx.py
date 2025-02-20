@@ -233,13 +233,14 @@ def main(opt):
     nc = 2
 
     images_parent_folder = opt.images_parent_folder
-
+    opt.csv_metadata_path = ''
     print(colorstr('val: '))
     opt.single_cls = False
     opt.input_channels = 1
     opt.tir_channel_expansion = False
     opt.no_tir_signal = False
     detection_res = list()
+    reorder_output_class_to_viz_od_dict = {0: 1, 1: 0}
 
     if opt.detection_no_gt:
         dataloader = LoadImages(images_parent_folder, img_size=imgsz_test, stride=32,
@@ -366,9 +367,17 @@ def main(opt):
                 if len(output) == 1:
                     output = output[0]
 
+
                 if is_new_model:
-                     # new TIR model packing all outputs on the same array
                     nn_out = output #[batch_id, selected_boxes_xyxy, selected_category, selected_score]
+                    if opt.reorder_output_class_to_viz_od:
+                        out_all = list()
+                        for x in nn_out:
+                            out_all.append(
+                                np.append(np.append(x[:5], reorder_output_class_to_viz_od_dict[x[5]]), x[6:]))
+                        nn_out = np.stack(out_all, axis=0)
+
+                    # new TIR model packing all outputs on the same array
                     scores_above_th_val = nn_out[[nn_out[:, -1] > det_threshold][0], -1]
                     scores_above_th = nn_out[:, -1] > det_threshold
 
@@ -673,6 +682,8 @@ if __name__ == '__main__':
     parser.add_argument('--noise-parent-folder', type=str, default='/home/hanoch/projects/tir_frames_rois/marmon_noisy_sy/noise_samples', help='')  # in case --detection-no-gt
     # --test-path   '/home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set_part.txt'  'Test51a_Test40A_test_set_part.txt'
 
+    parser.add_argument('--reorder-output-class-to-viz-od', action='store_true', help='') #  "person": 0, "car": 1,   "bike": 2,   "animal": 3, "locomotive": 4, "braking_shoe": 5
+
     opt = parser.parse_args()
 
     main(opt=opt)
@@ -684,7 +695,7 @@ if __name__ == '__main__':
 
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt
     
-    DEtections only old model  
+DEtections only old model  
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.8  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt
     Reducing th = 0.2
     --cache-images --device 0 --weights /mnt/Data/hanoch/tir_old_tf/tir_od_1.5.onnx --img-size 512 --conf-thres 0.2  --iou-thres 0.5 --norm-type no_norm --save-path /mnt/Data/hanoch/runs/tir_old_1.5 --images-parent-folder /home/hanoch/projects/tir_frames_rois/marmon_noisy_sy --detection-no-gt
@@ -702,4 +713,12 @@ Detection
     --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.48  --iou-thres 0.6 --norm-type single_image_percentile_0_1 --images-parent-folder /mnt/Data/hanoch/tir_frames_rois/onnx_bm --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run --detection-no-gt
 P/R curve 
     --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.01  --iou-thres 0.6 --norm-type single_image_percentile_0_1  --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run/P_R_curve_test_set --adding-ext-noise
+    
+    DEtections only New model Yolov7999  based on text file name
+    --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.onnx --img-size 640 --conf-thres 0.48  --iou-thres 0.6 --norm-type single_image_percentile_0_1 --images-parent-folder /mnt/Data/hanoch/tir_frames_rois/onnx_bm --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run --detection-no-gt
+best.person_cls_0.onnx
+    --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.person_cls_0.onnx --img-size 640 --conf-thres 0.01  --iou-thres 0.6 --norm-type single_image_percentile_0_1  --test-files-path /home/hanoch/projects/tir_od/yolov7/tir_od/test_set/Test51a_Test40A_test_set.txt --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run/P_R_curve_test_set_reorder_output 
+    # Test vector 
+    --cache-images --device 0 --weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.person_cls_0.onnx --img-size 640 --conf-thres 0.48  --iou-thres 0.6 --norm-type single_image_percentile_0_1  --images-parent-folder /mnt/Data/hanoch/tir_frames_rois/onnx_bm --save-path /mnt/Data/hanoch/runs/yolov7999_onnx_run --detection-no-gt 
+
     """
