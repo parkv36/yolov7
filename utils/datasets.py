@@ -39,6 +39,36 @@ eps = 1e-5
 import pandas as pd
 def flatten(lst): return [x for l in lst for x in l]
 
+
+def clip_boxes_to_border(boxes_array, border):
+    """
+    Clips bounding boxes to stay within the given border.
+
+    Args:
+        boxes_array (np.ndarray): A NumPy array of shape (N, 5),
+                                  where N is the number of boxes.
+                                  Format: [class_id, x_min, y_min, x_max, y_max].
+        border (tuple): Border box as (x_min, y_min, x_max, y_max).
+
+    Returns:
+        np.ndarray: Clipped bounding boxes with the same shape (N, 5).
+    """
+    if boxes_array.shape[1] != 5:
+        raise ValueError("The array must have shape (N, 5) with [class_id, x_min, y_min, x_max, y_max]")
+
+    x_min_border, y_min_border, x_max_border, y_max_border = border
+
+    # Copy the original array to avoid modifying input
+    clipped_boxes = np.copy(boxes_array)
+
+    # Clip coordinates while keeping class_id unchanged
+    clipped_boxes[:, 1] = np.clip(clipped_boxes[:, 1], x_min_border, x_max_border)  # x_min
+    clipped_boxes[:, 2] = np.clip(clipped_boxes[:, 2], y_min_border, y_max_border)  # y_min
+    clipped_boxes[:, 3] = np.clip(clipped_boxes[:, 3], x_min_border, x_max_border)  # x_max
+    clipped_boxes[:, 4] = np.clip(clipped_boxes[:, 4], y_min_border, y_max_border)  # y_max
+
+    return clipped_boxes
+
 help_url = 'https://github.com/ultralytics/yolov5/wiki/Train-Custom-Data'
 img_formats = ['bmp', 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'dng', 'webp', 'mpo']  # acceptable image suffixes
 vid_formats = ['mov', 'avi', 'mp4', 'mpg', 'mpeg', 'm4v', 'wmv', 'mkv']  # acceptable video suffixes
@@ -644,24 +674,36 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         cache.pop('hash')  # remove hash
         cache.pop('version')  # remove version
         labels, shapes, self.segments = zip(*cache.values())
+        shapes = list(shapes)
         # #@@HK TODO adding truncation ratio increase here
         # if labels.shape[1] > 5:
         #   labels = labels[:,:5]
         #   self.truncation_ratio = labels[:,5]
         self.labels = list(labels)
-        self.shapes = np.array(shapes, dtype=np.float64)
         self.img_files = list(cache.keys())  # update
         self.label_files = img2label_paths(cache.keys())  # update
+        # [l for ix,l in enumerate(self.labels) if (l[:, 1:] >1).all()]
         if single_cls:
             for x in self.labels:
                 x[:, 0] = 0
 
+        if nm > 0:
+            print('Remove missing annotations file avoiding unlabeled images that would considered as BG')
+        for ix  in range(len(self.labels) - 1, -1, -1): # safe remove by reverrse iteration #enumerate(self.labels):
+            if (self.labels[ix][:, 1:] > 1).any() or self.labels[ix].size < 5:
+                del self.labels[ix]
+                del self.img_files[ix]
+                del self.label_files[ix]
+                del shapes[ix]
+
+        self.shapes = np.array(shapes, dtype=np.float64)
         n = len(shapes)  # number of images
         bi = np.floor(np.arange(n) / batch_size).astype(int)  # batch index
         nb = bi[-1] + 1  # number of batches
         self.batch = bi  # batch index of image
         self.n = n
         self.indices = range(n)
+        self.mosiac_no = 0
 
         # Rectangular Training
         if self.rect:
@@ -806,7 +848,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
     #     return self
 
     def __getitem__(self, index):
-        index = self.indices[index]  # linear, shuffled, or image_weights
+        index = self.indices[index]  # linear, shuffled, or image_weights HK@@ since the fi
 
         file_type = os.path.basename(self.img_files[index]).split('.')[-1].lower()
 
@@ -1437,14 +1479,18 @@ def hist_equalize(img, clahe=True, bgr=False):
         yuv[:, :, 0] = cv2.equalizeHist(yuv[:, :, 0])  # equalize Y channel histogram
     return cv2.cvtColor(yuv, cv2.COLOR_YUV2BGR if bgr else cv2.COLOR_YUV2RGB)  # convert YUV image to RGB
 
-
 def load_mosaic(self, index, filling_value, file_type='tiff'):
     # loads images in a 4-mosaic
-
+    self.mosiac_no += 1
     labels4, segments4 = [], []
     s = self.img_size
     yc, xc = [int(random.uniform(-x, 2 * s + x)) for x in self.mosaic_border]  # mosaic center x, y
     indices = [index] + random.choices(self.indices, k=3)  # 3 additional image indices
+
+    # debug = True
+    # if debug:
+    #     indices[1] = 17106 #TIR2_V60_Jan21_Test51D_ML_RD_IL_26_12_2021_15_50_27_FS_210_XGA_0001_0100_ROTEM_left_roi_210_85
+
     for i, index in enumerate(indices):
         # Load image
         img, _, (h, w) = load_image(self, index)
@@ -1456,8 +1502,10 @@ def load_mosaic(self, index, filling_value, file_type='tiff'):
                                     percentile=self.percentile, beta=self.beta)
 
         # import tifffile
-        # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
-        #                               'img_projective_' + str(self.img_files[index].split('/')[-1].split('.tiff')[0]) +'.tiff'), img)
+        # tifffile.imwrite(os.path.join('/mnt/Data/hanoch/runs/output',
+        #                               str(self.mosiac_no) + 'img_mosiac_' + '_crop_no_' + str(i) + '_'\
+        #                               +str(self.img_files[index].split('/')[-1].split('.tiff')[0]) +'.tiff'),
+        #                                 img)
 
         # place img in img4
         if i == 0:  # top left
@@ -1468,8 +1516,8 @@ def load_mosaic(self, index, filling_value, file_type='tiff'):
             x1a, y1a, x2a, y2a = max(xc - w, 0), max(yc - h, 0), xc, yc  # xmin, ymin, xmax, ymax (large image)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), h - (y2a - y1a), w, h  # xmin, ymin, xmax, ymax (small image)
         elif i == 1:  # top right
-            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc
-            x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h
+            x1a, y1a, x2a, y2a = xc, max(yc - h, 0), min(xc + w, s * 2), yc # dest image
+            x1b, y1b, x2b, y2b = 0, h - (y2a - y1a), min(w, x2a - x1a), h # src image
         elif i == 2:  # bottom left
             x1a, y1a, x2a, y2a = max(xc - w, 0), yc, xc, min(s * 2, yc + h)
             x1b, y1b, x2b, y2b = w - (x2a - x1a), 0, w, min(y2a - y1a, h)
@@ -1486,6 +1534,7 @@ def load_mosaic(self, index, filling_value, file_type='tiff'):
         if labels.size:
             labels[:, 1:] = xywhn2xyxy(labels[:, 1:], w, h, padw, padh)  # normalized xywh to pixel xyxy format
             segments = [xyn2xy(x, w, h, padw, padh) for x in segments]
+            labels = clip_boxes_to_border(labels, (x1a, y1a, x2a, y2a))
         labels4.append(labels)
         segments4.extend(segments)
 
@@ -1511,18 +1560,19 @@ def load_mosaic(self, index, filling_value, file_type='tiff'):
                                          # border to remove
 
     # import tifffile
-    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
-    #                               'img_projective_' + str(self.img_files[indices[0]].split('/')[-1].split('.tiff')[0]) +'.tiff'), img)
-    #
-    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
-    #                               'img_projective_' + str(
-    #                                   self.img_files[indices[1]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
-    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
-    #                               'img_projective_' + str(
-    #                                   self.img_files[indices[2]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
-    # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
-    #                               'img_projective_' + str(
-    #                                   self.img_files[indices[3]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
+    # tifffile.imwrite(os.path.join('/mnt/Data/hanoch/runs/output',
+    #                               str(self.mosiac_no) + '_img_mosaic' + '_' + str(
+    #                                   self.img_files[indices[0]].split('/')[-1].split('.tiff')[0]) +'.tiff'),
+    #                                 img4)
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+            #                               'img_mosiac_' + str(self.mosiac_no) + '_' + str(
+            #                                   self.img_files[indices[1]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+            #                               'img_mosiac_' + str(self.mosiac_no) + '_' + str(
+            #                                   self.img_files[indices[2]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
+            # tifffile.imwrite(os.path.join('/home/hanoch/projects/tir_od/output',
+            #                               'img_mosiac_' + str(self.mosiac_no) + '_' + str(
+            #                                   self.img_files[indices[3]].split('/')[-1].split('.tiff')[0]) + '.tiff'), img)
 
     return img4, labels4
 
