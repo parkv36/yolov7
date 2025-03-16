@@ -493,7 +493,7 @@ def box_giou(box1, box2):
 
     area1 = box_area(box1.T)
     area2 = box_area(box2.T)
-    
+
     inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
     union = (area1[:, None] + area2 - inter)
 
@@ -528,7 +528,7 @@ def box_ciou(box1, box2, eps: float = 1e-7):
 
     area1 = box_area(box1.T)
     area2 = box_area(box2.T)
-    
+
     inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
     union = (area1[:, None] + area2 - inter)
 
@@ -580,7 +580,7 @@ def box_diou(box1, box2, eps: float = 1e-7):
 
     area1 = box_area(box1.T)
     area2 = box_area(box2.T)
-    
+
     inter = (torch.min(box1[:, None, 2:], box2[:, 2:]) - torch.max(box1[:, None, :2], box2[:, :2])).clamp(0).prod(2)
     union = (area1[:, None] + area2 - inter)
 
@@ -799,7 +799,7 @@ def non_max_suppression_kpt(prediction, conf_thres=0.25, iou_thres=0.45, classes
 
 def strip_optimizer(f='best.pt', s=''):  # from utils.general import *; strip_optimizer()
     # Strip optimizer from 'f' to finalize training, optionally save as 's'
-    x = torch.load(f, map_location=torch.device('cpu'))
+    x = torch.load(f, map_location=torch.device('cpu'), weights_only=False)
     if x.get('ema'):
         x['model'] = x['ema']  # replace model with ema
     for k in 'optimizer', 'training_results', 'wandb_id', 'ema', 'updates':  # keys
