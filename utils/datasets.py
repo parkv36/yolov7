@@ -874,7 +874,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
             shapes = None
 
             # MixUp https://arxiv.org/pdf/1710.09412.pdf
-            if random.random() < hyp['mixup']:
+            if random.random() < hyp['mixup']: # since mixup is nested in mosaic first its actually override it
                 if random.random() < 0.8:
                     img2, labels2 = load_mosaic(self, random.randint(0, len(self.labels) - 1), filling_value=filling_value, file_type=file_type)
                 else:

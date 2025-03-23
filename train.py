@@ -58,7 +58,7 @@ if clear_ml:  # clearml support
 
     task = Task.init(
             project_name="TIR_OD",
-            task_name="train yolov7 'train' class"  # output_uri = True model torch.save will uploaded to file server or =/mnt/myfolder or AWS or Azure
+            task_name="train yolov7 'locomotive' class"  # output_uri = True model torch.save will uploaded to file server or =/mnt/myfolder or AWS or Azure
             # output_uri='azure://company.blob.core.windows.net/folder'
     )
     # Task.execute_remotely() will invoke the job immidiately over the remote and not DeV
@@ -204,7 +204,7 @@ def train(hyp, opt, device, tb_writer=None):
             v.requires_grad = False
 
     # Optimizer
-    nbs = 64  # nominal batch size # HK gradient accumulation fixed size no less than
+    nbs = opt.nom_batch_size_grad_acm #64  # nominal batch size # HK gradient accumulation fixed size no less than
     accumulate = max(round(nbs / total_batch_size), 1)  # accumulate loss before optimizing
     hyp['weight_decay'] *= total_batch_size * accumulate / nbs  # scale weight_decay
     logger.info(f"Scaled weight_decay = {hyp['weight_decay']}")
@@ -279,7 +279,7 @@ def train(hyp, opt, device, tb_writer=None):
     else:
         optimizer = optim.SGD(pg0, lr=hyp['lr0'], weight_decay=0 , momentum=hyp['momentum'], nesterov=True)
 
-    optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay
+    optimizer.add_param_group({'params': pg1, 'weight_decay': hyp['weight_decay']})  # add pg1 with weight_decay : only over weights
     optimizer.add_param_group({'params': pg2 , 'weight_decay': 0})  # add pg2 (biases)
     logger.info('Optimizer groups: %g .bias, %g conv.weight, %g other' % (len(pg2), len(pg1), len(pg0)))
 
@@ -301,10 +301,16 @@ def train(hyp, opt, device, tb_writer=None):
         lf = lambda x: (1 - x / (epochs - 1)) * (1.0 - hyp['lrf']) + hyp['lrf']  # linear
     else:
         lf = one_cycle(1, hyp['lrf'], epochs)  # cosine 1->hyp['lrf']
+    # To modify the LambdaLR scheduler so that the learning rate increases when accuracy drops, you can introduce a trigger-based mechanism. Below is the modified implementation that:
+    # def lr_lambda(epoch):
+    #     increase_factor = 2
+    #     base_lr = (1 - epoch / (epochs - 1)) * (1.0 - hyp['lrf']) + hyp['lrf']
+    #     if accuracy_drop_trigger:
+    #         return base_lr * increase_factor  # Increase LR
+    #     return base_lr  # Normal decay
+
     scheduler = lr_scheduler.LambdaLR(optimizer, lr_lambda=lf)
     # plot_lr_scheduler(optimizer, scheduler, epochs)
-    # from utils.plots import plot_lr_scheduler
-    # plot_lr_scheduler(optimizer, scheduler, epochs, save_dir='/home/hanoch/projects/tir_od')
 
 
     # EMA
@@ -417,13 +423,28 @@ def train(hyp, opt, device, tb_writer=None):
     model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     class_inverse_freq = labels_to_class_weights(dataset.labels, nc).to(device)
     model.names = names
-
+    maps_val_all = list()
+    stop_train_plot_image = False
+    enable_cont_saving_images = False
     # Start training
     t0 = time.time()
     if hyp['warmup_epochs'] !=0: # otherwise it is forced to 1000 iterations
         nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations) # HK@@ bad for overfitting test where few examples i.e itoo few iterations
     else:
         nw = 0
+
+
+    if opt.cosine_anneal: # override the Lr schem
+        scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer=optimizer,
+                                                                    # T_0 period of 1st wamup Number of iterations for the first restart  ;T_mult=1 increase T_0 each period
+                                                                    T_0=int(2*hyp['warmup_epochs']), T_mult=2,
+                                                                    eta_min=0, #hyp['lr0'] / 10,
+                                                                    last_epoch=-1)  # lr range test take max warmup/4 for CLR https://arxiv.org/abs/1803.09820s
+
+    if 1:
+        from utils.plots import plot_lr_scheduler
+        plot_lr_scheduler(optimizer, scheduler, epochs, save_dir=save_dir)
+
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
     maps = np.zeros(nc)  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
@@ -436,8 +457,13 @@ def train(hyp, opt, device, tb_writer=None):
     loss_weight = torch.tensor([])
     if opt.loss_weight:
         loss_weight = class_inverse_freq
-    compute_loss_ota = ComputeLossOTA(model, loss_weight=loss_weight)  # init loss class
-    compute_loss = ComputeLoss(model, loss_weight=loss_weight)  # init loss class
+        if 0:
+            loss_weight = torch.Tensor([0.0, 0.0, 1.0]).to(device)
+    #     Replaced YOLO classification loss with Focal Loss using per-class α values. Kept Objectness Loss and BBox Loss unchanged.
+    if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
+        compute_loss_ota = ComputeLossOTA(model, loss_weight=loss_weight)  # init loss class
+
+    compute_loss = ComputeLoss(model, loss_weight=loss_weight)  # init loss class it is required for the test set as well hance mandatory
 
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
@@ -546,6 +572,10 @@ def train(hyp, opt, device, tb_writer=None):
 
                     tb_writer.add_scalar('Grad norm', total_grad_norm, ni)
 
+            last_lr = scheduler.get_last_lr()
+            # print(last_lr)
+            tb_writer.add_scalar('last_lr', last_lr[-1], ni)
+
             # Optimize
             if ni % accumulate == 0:
                 scaler.step(optimizer)  # optimizer.step
@@ -570,7 +600,7 @@ def train(hyp, opt, device, tb_writer=None):
                 #
 
                 # Plot
-                if plots and ni < 100:
+                if ((plots and ni < 100) or enable_cont_saving_images) and not(stop_train_plot_image):
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
                     Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
                     # if tb_writer:
@@ -582,6 +612,10 @@ def train(hyp, opt, device, tb_writer=None):
 
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
+        if epoch >= opt.ohem_start_ep and opt.ohem_start_ep >0:
+            # dataloader_orig = copy.deepcopy(dataloader)
+
+            print('OHEM')
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
@@ -617,6 +651,11 @@ def train(hyp, opt, device, tb_writer=None):
                                                  hyp=hyp,
                                                  model_name=model_name)
 
+            if epoch > 1:
+                if maps_val_all[-1][2]-maps[2] >= 0.08: # abrupt falling of 3rs class locomotive
+                    stop_train_plot_image = True
+                    print('!!!!!!!!!!!!!!!!!!!!!  abrupt failure in map  !!!!!!!!!!!!!!!')
+            maps_val_all.append(maps)
             # Write
             with open(results_file, 'a') as f:
                 f.write(s + '%10.4g' * 7 % results + '\n')  # append metrics, val_loss
@@ -770,6 +809,8 @@ if __name__ == '__main__':
 
     parser.add_argument('--gamma-aug-prob', type=float, default=0.1, help='')
 
+    parser.add_argument('--fl-gamma', type=float, default=-1, help='')
+
     parser.add_argument('--amp', action='store_true', help='Remove torch AMP')
 
     parser.add_argument('--predefined-seed', action='store_true', help='predefined_seed only set it to constant otherwise add args that load the random one ')
@@ -780,6 +821,13 @@ if __name__ == '__main__':
 
     parser.add_argument('--embed-analyse', action='store_true', help='')
 
+    parser.add_argument('--ohem-start-ep', type=int, default=-1, help='Online Hard example by re-eval training set after N-iters and take top-K')
+
+    parser.add_argument('--ohem-topk', type=float, default=0.7, help='')
+
+    parser.add_argument('--nom-batch-size-grad-acm', type=int, default=64, help='')
+
+    parser.add_argument('--cosine-anneal', action='store_true', help='')
 
     opt = parser.parse_args()
     # Only for clearML env
@@ -847,7 +895,10 @@ if __name__ == '__main__':
     hyp['person_size_small_medium_th'] = hyp.get('person_size_small_medium_th', 32 * 32)
     hyp['car_size_small_medium_th'] = hyp.get('car_size_small_medium_th', 44 * 44)
     hyp['random_pad'] = hyp.get('random_pad', defualt_random_pad)
-
+    if opt.fl_gamma > 0:
+        hyp['fl_gamma'] = opt.fl_gamma
+    else:
+        hyp['fl_gamma'] = hyp.get('fl_gamma', 2.5)
 
     # Train
     logger.info(opt)

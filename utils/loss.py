@@ -136,7 +136,13 @@ class FocalLoss(nn.Module):
         # TF implementation https://github.com/tensorflow/addons/blob/v0.7.1/tensorflow_addons/losses/focal_loss.py
         pred_prob = torch.sigmoid(pred)  # prob from logits
         p_t = true * pred_prob + (1 - true) * (1 - pred_prob)
-        alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
+
+        if isinstance(self.alpha, torch.Tensor): # weights between classes or labels rather than between each label and BG
+            if self.alpha.numel() > 0:
+                alpha_factor = true * self.alpha
+        else:# old scalar case of class vs. all but not supporting multi-class weight
+            alpha_factor = true * self.alpha + (1 - true) * (1 - self.alpha)
+
         modulating_factor = (1.0 - p_t) ** self.gamma
         loss *= alpha_factor * modulating_factor
 
@@ -1709,3 +1715,49 @@ class ComputeLossAuxOTA:
             anch.append(anchors[a])  # anchors
 
         return indices, anch
+"""
+
+import torch
+import torch.nn.functional as F
+
+def class_weighted_multilabel_bce_loss(logits: torch.Tensor, targets: torch.Tensor, weight_matrix: torch.Tensor) -> torch.Tensor:
+    
+    # Computes class-class weighted multi-label BCE loss.
+    # 
+    # Args:
+    #     logits: Tensor of shape (N, C) - raw model outputs (before sigmoid)
+    #     targets: Tensor of shape (N, C) - ground truth binary labels (0 or 1)
+    #     weight_matrix: Tensor of shape (C, C) - inter-class weight matrix
+    # 
+    # Returns:
+    #     torch.Tensor: Weighted BCE loss
+    
+    # Apply Sigmoid to get probabilities
+    probs = torch.sigmoid(logits)
+
+    # Compute BCE loss for each class
+    bce_loss = - (targets * torch.log(probs + 1e-9) + (1 - targets) * torch.log(1 - probs + 1e-9))
+
+    # Expand weight matrix to (N, C, C) for batch-wise computation
+    expanded_weights = weight_matrix.unsqueeze(0).expand(targets.size(0), -1, -1)
+
+    # Compute inter-class weighted loss (weighted sum across class axis)
+    weighted_loss = torch.matmul(bce_loss.unsqueeze(1), expanded_weights).squeeze(1)
+
+    # Average across samples and classes
+    return weighted_loss.mean()
+
+# Example usage
+N, C = 4, 3  # 4 samples, 3 classes
+logits = torch.randn(N, C)  # Random model outputs
+targets = torch.randint(0, 2, (N, C)).float()  # Random binary ground truth
+
+# Define class-class weight matrix
+weight_matrix = torch.tensor([[1.0, 0.5, 0.2],  # Class 0 affects others with 0.5 and 0.2 weight
+                              [0.5, 1.0, 0.3],  # Class 1 affects others with 0.5 and 0.3 weight
+                              [0.2, 0.3, 1.0]]) # Class 2 affects others with 0.2 and 0.3 weight
+
+loss = class_weighted_multilabel_bce_loss(logits, targets, weight_matrix)
+print(loss)
+
+"""

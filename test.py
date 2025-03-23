@@ -441,7 +441,7 @@ def test(data,
 
 
         # Plot images  aa = np.repeat(img[0,:,:,:].cpu().permute(1,2,0).numpy(), 3, axis=2).astype('float32') cv2.imwrite('test/exp40/test_batch88_labels__.jpg', aa*255)
-        if plots and batch_i > 10 or 1:
+        if (plots and batch_i > 10) or 1:
             # conf_thresh_plot = 0.1 # the plot threshold the connfidence
             f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
             Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
