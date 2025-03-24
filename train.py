@@ -388,9 +388,13 @@ def train(hyp, opt, device, tb_writer=None):
             for file in test_dataset.img_files:
                 f.write(f"{file}\n")
 
+        labels = np.concatenate(dataset.labels, 0)
+        c = torch.tensor(labels[:, 0])  # classes
+
+        labels_test = np.concatenate(testloader.dataset.labels, 0)
+        c_test = torch.tensor(labels_test[:, 0])  # classes
+
         if not opt.resume:
-            labels = np.concatenate(dataset.labels, 0)
-            c = torch.tensor(labels[:, 0])  # classes
             # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
             # model._initialize_biases(cf.to(device))
             if plots:
@@ -483,6 +487,10 @@ def train(hyp, opt, device, tb_writer=None):
 
     print(100 * '==')
     print('Training set labels {} count : {}'.format(names, torch.bincount(c.long(), minlength=nc) + 1))
+
+    print(100 * '==')
+    print('Validation set labels {} count : {}'.format(names, torch.bincount(c_test.long(), minlength=nc) + 1))
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
