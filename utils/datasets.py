@@ -688,13 +688,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 x[:, 0] = 0
 
         if nm > 0:
-            print('Remove missing annotations file avoiding unlabeled images that would considered as BG')
+            print(100*'/*/')
+            print('Remove missing annotations file avoiding unlabeled images that would considered as BG. Before', len(self.labels))
         for ix  in range(len(self.labels) - 1, -1, -1): # safe remove by reverrse iteration #enumerate(self.labels):
             if (self.labels[ix][:, 1:] > 1).any() or self.labels[ix].size < 5:
                 del self.labels[ix]
                 del self.img_files[ix]
                 del self.label_files[ix]
                 del shapes[ix]
+
+        print('after',               len(self.labels))
 
         self.shapes = np.array(shapes, dtype=np.float64)
         n = len(shapes)  # number of images
@@ -770,6 +773,24 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     print(f'{fname} fname WARNING: Ignoring corrupted image and/or label {file_name}: {e}')
 
 
+    def resample_ohem(self):
+
+        for ix  in range(len(self.labels) - 1, -1, -1): # safe remove by reverrse iteration #enumerate(self.labels):
+            if (self.labels[ix][:, 1:] > 1).any() or self.labels[ix].size < 5:
+                del self.labels[ix]
+                del self.img_files[ix]
+                del self.label_files[ix]
+                # del shapes[ix]
+                del self.imgs[ix]
+                self.n = self.n - 1
+        # self.shapes = np.array(shapes, dtype=np.float64)
+        # n = len(shapes)  # number of images
+        bi = np.floor(np.arange(self.n) / self.batch).astype(int)  # batch index
+        nb = bi[-1] + 1  # number of batches
+        # self.batch = bi  # batch index of image
+
+        self.indices = range(self.n)
+        self.mosiac_no = 0
 
 
 

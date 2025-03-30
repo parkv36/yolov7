@@ -458,7 +458,10 @@ def train(hyp, opt, device, tb_writer=None):
     else:
         scaler = torch.amp.GradScaler("cuda", enabled=opt.amp) if is_torch_240 else torch.cuda.amp.GradScaler(enabled=opt.amp)
 
-    loss_weight = torch.tensor([])
+    loss_weight = torch.tensor([]) # for BCE
+    if opt.multi_class_no_multi_label:
+        loss_weight = torch.ones(1)
+
     if opt.loss_weight:
         loss_weight = class_inverse_freq
         if 0:
@@ -466,8 +469,12 @@ def train(hyp, opt, device, tb_writer=None):
     #     Replaced YOLO classification loss with Focal Loss using per-class α values. Kept Objectness Loss and BBox Loss unchanged.
     if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
         compute_loss_ota = ComputeLossOTA(model, loss_weight=loss_weight)  # init loss class
+        if opt.multi_class_no_multi_label:
+            raise ValueError('Not imp yet!')
 
-    compute_loss = ComputeLoss(model, loss_weight=loss_weight)  # init loss class it is required for the test set as well hance mandatory
+    compute_loss = ComputeLoss(device, model, loss_weight=loss_weight,
+                               multi_class_no_multi_label=opt.multi_class_no_multi_label,
+                               multi_label_asymetric_focal_loss=opt.multi_label_asymetric_focal_loss)  # init loss class it is required for the test set as well hance mandatory
 
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
@@ -621,7 +628,7 @@ def train(hyp, opt, device, tb_writer=None):
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
         if epoch >= opt.ohem_start_ep and opt.ohem_start_ep >0:
-            # dataloader_orig = copy.deepcopy(dataloader)
+            dataloader_orig = copy.deepcopy(dataloader)
 
             print('OHEM')
 
@@ -837,8 +844,15 @@ if __name__ == '__main__':
 
     parser.add_argument('--cosine-anneal', action='store_true', help='')
 
+    parser.add_argument('--multi-class-no-multi-label', action='store_true', help='disbale multi-label')
+
+    parser.add_argument('--multi-label-asymetric-focal-loss', action='store_true', help='disbale multi-label')
+
     opt = parser.parse_args()
     # Only for clearML env
+
+    if opt.multi_class_no_multi_label and opt.multi_label_asymetric_focal_loss:
+        raise ValueError('ASL is for multi label rather than multi class')
 
     if opt.tir_channel_expansion: # operates over 3 channels
         opt.input_channels = 3
