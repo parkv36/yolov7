@@ -1,6 +1,6 @@
-train: /kaggle/working/dataset/train
-val: /kaggle/working/dataset/validation
-test: /kaggle/working/dataset/test
+train: /kaggle/input/frutasyverduras-oid-from0to29/OID_normalized/train
+val: /kaggle/input/frutasyverduras-oid-from0to29/OID_normalized/validation
+test: /kaggle/input/frutasyverduras-oid-from0to29/OID_normalized/test
 
 # number of classes
 nc: 30
