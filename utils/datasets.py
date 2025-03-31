@@ -614,6 +614,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         self.tir_channel_expansion = tir_channel_expansion
         self.is_tir_signal = not (no_tir_signal)
         self.random_pad = hyp['random_pad']
+        self.batch_size = batch_size
 
         self.use_csv_meta_data_file = False
         if bool(csv_metadata_path):
@@ -773,25 +774,26 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                     print(f'{fname} fname WARNING: Ignoring corrupted image and/or label {file_name}: {e}')
 
 
-    def resample_ohem(self):
+    def resample_ohem(self, top_k_indices):
+        if len(top_k_indices.shape) == 2:
+            top_k_indices = top_k_indices.reshape(-1)
 
-        for ix  in range(len(self.labels) - 1, -1, -1): # safe remove by reverrse iteration #enumerate(self.labels):
-            if (self.labels[ix][:, 1:] > 1).any() or self.labels[ix].size < 5:
-                del self.labels[ix]
-                del self.img_files[ix]
-                del self.label_files[ix]
-                # del shapes[ix]
-                del self.imgs[ix]
-                self.n = self.n - 1
-        # self.shapes = np.array(shapes, dtype=np.float64)
+        self.dataset_was_resampled = True
+        self.labels =  [self.labels[i] for i in top_k_indices]
+        self.img_files =  [self.img_files[i] for i in top_k_indices]
+        self.label_files = [self.label_files[i] for i in top_k_indices]
+       # del shapes[ix]
+        self.imgs = [self.imgs[i] for i in top_k_indices]
+        self.n = len(self.imgs)
+        self.shapes = [self.shapes[i] for i in top_k_indices]
+
         # n = len(shapes)  # number of images
-        bi = np.floor(np.arange(self.n) / self.batch).astype(int)  # batch index
+        bi = np.floor(np.arange(self.n) / self.batch_size).astype(int)  # batch index
         nb = bi[-1] + 1  # number of batches
-        # self.batch = bi  # batch index of image
+        self.batch = bi  # batch index of image
 
         self.indices = range(self.n)
         self.mosiac_no = 0
-
 
 
     def cache_labels(self, num_cls, path=Path('./labels.cache'), prefix=''):
@@ -2303,3 +2305,19 @@ def load_segmentations(self, index):
     #print(key)
     # /work/handsomejw66/coco17/
     return self.segs[key]
+
+
+from torch.utils.data import DataLoader
+
+def reset_dataloader_batch_size(dataloader, ohem_batch_size, disable_augment=True):
+    dataloader_ohem = DataLoader(dataloader.dataset, batch_size=ohem_batch_size,
+                                 num_workers=dataloader.num_workers,
+                                 sampler=dataloader.sampler,
+                                 pin_memory=dataloader.pin_memory,
+                                 collate_fn=dataloader.collate_fn)
+
+    if disable_augment:
+        dataloader_ohem.dataset.mosaic = False
+        dataloader_ohem.dataset.augment = False
+
+    return dataloader_ohem

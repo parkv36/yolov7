@@ -21,6 +21,7 @@ from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+import copy
 
 import test  # import test.py to get mAP after each epoch
 
@@ -39,7 +40,7 @@ except:
 
 from models.yolo import Model
 from utils.autoanchor import check_anchors
-from utils.datasets import create_dataloader
+from utils.datasets import create_dataloader, reset_dataloader_batch_size
 from utils.general import labels_to_class_weights, increment_path, labels_to_image_weights, init_seeds, \
     fitness, strip_optimizer, get_latest_run, check_dataset, check_file, check_img_size, \
     print_mutation, set_logging, one_cycle, colorstr
@@ -132,6 +133,7 @@ def train(hyp, opt, device, tb_writer=None):
         yaml.dump(vars(opt), f, sort_keys=False)
 
     is_torch_240 = int(re.search(r'([\d.]+)', torch.__version__).group(1).replace('.', '')) >=240
+    model_name = str(opt.weights)[str(opt.weights).find('yolo'):].split('/')[0]
 
     # Configure
     plots = not opt.evolve  # create plots
@@ -498,6 +500,10 @@ def train(hyp, opt, device, tb_writer=None):
     print(100 * '==')
     print('Validation set labels {} count : {}'.format(names, torch.bincount(c_test.long(), minlength=nc) + 1))
 
+    if opt.ohem_start_ep > 0:
+        # Run inference over the new model
+        dataloader_ohem_eval_set = copy.deepcopy(dataloader)
+
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
 
@@ -522,6 +528,8 @@ def train(hyp, opt, device, tb_writer=None):
         mloss = torch.zeros(4, device=device)  # mean losses
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
+
+
         pbar = enumerate(dataloader)
         logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'labels', 'img_size'))
         if rank in [-1, 0]:
@@ -628,9 +636,44 @@ def train(hyp, opt, device, tb_writer=None):
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
         if epoch >= opt.ohem_start_ep and opt.ohem_start_ep >0:
-            dataloader_orig = copy.deepcopy(dataloader)
+            # Run inference over the new model
+            # dataloader_orig = copy.deepcopy(dataloader)
 
-            print('OHEM')
+            ohem_batch_size = 1 # since reduction inside loss comp is per 1-3 scales of the classification head hence B axis is diminished
+            orig_dataloader_batch_size = dataloader.batch_size
+            # Restore dataloader to its basic
+            dataloader = copy.deepcopy(dataloader_ohem_eval_set)
+            # modified version for eval OHEM top-k
+            dataloader_ohem_eval_set = reset_dataloader_batch_size(dataloader, ohem_batch_size, disable_augment=True)
+
+
+            results, maps, times, loss_per_image_acm = test.test(data_dict,
+                                             batch_size=ohem_batch_size * 2,
+                                             imgsz=imgsz_test,
+                                             save_json=opt.save_json,
+                                             model=ema.ema,
+                                             iou_thres=hyp['iou_t'],
+                                             single_cls=opt.single_cls,
+                                             dataloader=dataloader_ohem_eval_set,
+                                             save_dir=save_dir,
+                                             verbose=False,
+                                             plots=False,
+                                             wandb_logger=wandb_logger,
+                                             compute_loss=compute_loss,
+                                             is_coco=is_coco,
+                                             v5_metric=opt.v5_metric,
+                                             hyp=hyp,
+                                             model_name=model_name)
+
+            # restore original dataloader from now on the dataloader will be modified inplace to accomodate OHEM top-k indices
+            dataloader_ohem_eval_set = copy.deepcopy(dataloader)
+
+            # dataloader.batch_size = orig_dataloader_batch_size # restore
+            loss_per_image_acm = torch.stack(loss_per_image_acm)
+            val, top_k_indices = torch.topk(loss_per_image_acm.T, int(opt.ohem_topk * dataloader.dataset.__len__()))
+            dataloader.dataset.resample_ohem(top_k_indices=top_k_indices)
+
+            print('OHEM epoch{} top-k {}'.format(epoch, top_k_indices))
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
@@ -644,11 +687,10 @@ def train(hyp, opt, device, tb_writer=None):
             ema.update_attr(model, include=['yaml', 'nc', 'hyp', 'gr', 'names', 'stride', 'class_weights'])
             final_epoch = epoch + 1 == epochs
 
-            model_name = str(opt.weights)[str(opt.weights).find('yolo'):].split('/')[0]
 
             if not opt.notest or final_epoch:  # Calculate mAP
                 wandb_logger.current_epoch = epoch + 1
-                results, maps, times = test.test(data_dict,
+                results, maps, times, _ = test.test(data_dict,
                                                  batch_size=batch_size * 2,
                                                  imgsz=imgsz_test,
                                                  save_json=opt.save_json,
@@ -665,6 +707,7 @@ def train(hyp, opt, device, tb_writer=None):
                                                  v5_metric=opt.v5_metric,
                                                  hyp=hyp,
                                                  model_name=model_name)
+
 
             if epoch > 1:
                 if maps_val_all[-1][2]-maps[2] >= 0.08: # abrupt falling of 3rs class locomotive
@@ -769,6 +812,7 @@ def train(hyp, opt, device, tb_writer=None):
         dist.destroy_process_group()
     torch.cuda.empty_cache()
     return results
+
 
 
 if __name__ == '__main__':
@@ -1078,6 +1122,9 @@ Extended model for higher resolution  YOLO7E6
 
 Overfit ful_res
 --workers 8 --device 0 --batch-size 8 --data data/tir_od_full_res_overfit.yaml --weights /mnt/Data/hanoch/tir_frames_rois/yolov7-e6.pt --img-size 1024 --cfg cfg/deploy/yolov7-e6.yaml --name yolov7e --hyp hyp.tir_od.aug_gamma_scaling_before_mosaic_rnd_scaling_e6_full_res_OVERFITTING.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 150 --gamma-aug-prob 0.3 --cache-images --project runs/train_7e
+
+#CE with class weight
+python -u ./yolov7/train.py --workers 8 --device 0 --batch-size 24 --data data/tir_od_center_roi_aug_list_train_cls_feb25.yaml --img 640 640 --weights /mnt/Data/hanoch/pretrained_coco_models/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic_rnd_scaling_no_ota.yaml --adam --linear-lr --norm-type single_image_percentile_0_1 --input-channels 1 --epochs 100 --gamma-aug-prob 0.1 --cache-images --image-weights --fl-gamma 1.5 --cosine-anneal --multi-class-no-multi-label --loss-weight
 
 
 Trin yolov7 640 for 1024 

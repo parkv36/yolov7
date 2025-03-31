@@ -106,6 +106,7 @@ def test(data,
 
     embed_analyse = kwargs.get('embed_analyse', False)
     model_name = kwargs.get('model_name', '')
+    loss_per_image_acm = list()
     if not training:
         if device.type != 'cpu':
             model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
@@ -219,7 +220,9 @@ def test(data,
             # out coco 80 classes : [1, 25200, 85] [batch, proposals_3_scales,4_box__coord+1_obj_score + n x classes]
             # Compute loss
             if compute_loss:
-                loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
+                loss_out = compute_loss([x.float() for x in train_out], targets) # loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
+                loss_per_image_acm.append(loss_out[0].detach().cpu())
+                loss += loss_out[1][:3]  # box, obj, cls
 
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
@@ -702,7 +705,7 @@ def test(data,
     if save_json:
         predictions_df.to_csv(pred_df_file, index=False)
 
-    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t
+    return (mp, mr, map50, map, *(loss.cpu() / len(dataloader)).tolist()), maps, t, loss_per_image_acm
 
 
 def sensor_type_breakdown_kpi(gt_per_range_bins, n_bins_of100m, names, nc, plots, range_bins_map, range_bins_support,
