@@ -1,0 +1,11 @@
+train: /kaggle/input/frutasyverduras-oid-from0to29/OID_normalized/train
+val: /kaggle/input/frutasyverduras-oid-from0to29/OID_normalized/validation
+test: /kaggle/input/frutasyverduras-oid-from0to29/OID_normalized/test
+
+# number of classes
+nc: 30
+
+# class names
+names: [ 'Apple', 'Artichoke','Asparagus', 'Banana', 'Broccoli','Cabbage','Cantaloupe','Carrot', 'Kiwi','Cucumber','Onion','Grape','Lemon','Mango','Orange','Peach', 'Pear','Pineapple','Pomegranate','Potato', 'Radish','Strawberry','Tomato','Watermelon','Zucchini','Avocado','Bellpepper','Cauliflower','Garlic','Plum']
+ 
+
