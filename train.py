@@ -46,7 +46,7 @@ from utils.general import labels_to_class_weights, increment_path, labels_to_ima
     print_mutation, set_logging, one_cycle, colorstr
 from utils.google_utils import attempt_download
 from utils.loss import ComputeLoss, ComputeLossOTA
-from utils.plots import plot_images, plot_results, plot_evolution
+from utils.plots import plot_images, plot_results, plot_evolution, append_to_txt
 from utils.torch_utils import ModelEMA, select_device, intersect_dicts, torch_distributed_zero_first, is_parallel
 from utils.wandb_logging.wandb_utils import WandbLogger, check_wandb_resume
 
@@ -66,9 +66,24 @@ if clear_ml:  # clearml support
     task.set_base_docker(docker_image="nvcr.io/nvidia/pytorch:24.09-py3", docker_arguments="--shm-size 8G")
 #     clear_ml can capture graph like tensorboard
 
+
+
 gradient_clip_value = 100.0
 opt_gradient_clipping = True
 
+
+class OhemScheduler():
+    def __init__(self, ohem_periodicity, ohem_start_ep, total_epochs):
+        self.ohem_on_epochs = range(ohem_start_ep, total_epochs, ohem_periodicity)
+        self.ohem_is_active = False
+
+    def is_ohem_active(self, curr_epoch):
+
+        if curr_epoch in self.ohem_on_epochs: # toggle
+            self.ohem_is_active = not(self.ohem_is_active)
+        return self.ohem_is_active
+
+    
 def callback_fun_det_anomaly():
     pass
 def find_clipped_gradient_within_layer(model, gradient_clip_value):
@@ -447,7 +462,7 @@ def train(hyp, opt, device, tb_writer=None):
                                                                     eta_min=0, #hyp['lr0'] / 10,
                                                                     last_epoch=-1)  # lr range test take max warmup/4 for CLR https://arxiv.org/abs/1803.09820s
 
-    if 1:
+    if 0:
         from utils.plots import plot_lr_scheduler
         plot_lr_scheduler(optimizer, scheduler, epochs, save_dir=save_dir)
 
@@ -501,8 +516,11 @@ def train(hyp, opt, device, tb_writer=None):
     print('Validation set labels {} count : {}'.format(names, torch.bincount(c_test.long(), minlength=nc) + 1))
 
     if opt.ohem_start_ep > 0:
+        ohem_scheduler = OhemScheduler(ohem_periodicity=opt.ohem_period,
+                                        ohem_start_ep=opt.ohem_start_ep, total_epochs=epochs)
         # Run inference over the new model
         dataloader_ohem_eval_set = copy.deepcopy(dataloader)
+        ep_before_ohem = 0
 
     for epoch in range(start_epoch, epochs):  # epoch ------------------------------------------------------------------
         model.train()
@@ -529,9 +547,12 @@ def train(hyp, opt, device, tb_writer=None):
         if rank != -1:
             dataloader.sampler.set_epoch(epoch)
 
+        try:
+            pbar = enumerate(dataloader)
+            logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'labels', 'img_size'))
+        except Exception as e:
+            print("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!", e)
 
-        pbar = enumerate(dataloader)
-        logger.info(('\n' + '%10s' * 8) % ('Epoch', 'gpu_mem', 'box', 'obj', 'cls', 'total', 'labels', 'img_size'))
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
@@ -636,44 +657,47 @@ def train(hyp, opt, device, tb_writer=None):
             # end batch ------------------------------------------------------------------------------------------------
         # end epoch ----------------------------------------------------------------------------------------------------
         if epoch >= opt.ohem_start_ep and opt.ohem_start_ep >0:
+
             # Run inference over the new model
             # dataloader_orig = copy.deepcopy(dataloader)
+            if ohem_scheduler.is_ohem_active(epoch):
+                ohem_batch_size = 1 # since reduction inside loss comp is per 1-3 scales of the classification head hence B axis is diminished
+                # orig_dataloader_batch_size = dataloader.batch_size
+                # Restore dataloader to its basic
+                dataloader = copy.deepcopy(dataloader_ohem_eval_set)
+                # modified version for eval OHEM top-k
+                dataloader_ohem_eval_set = reset_dataloader_batch_size(dataloader, ohem_batch_size, disable_augment=True)
 
-            ohem_batch_size = 1 # since reduction inside loss comp is per 1-3 scales of the classification head hence B axis is diminished
-            orig_dataloader_batch_size = dataloader.batch_size
-            # Restore dataloader to its basic
-            dataloader = copy.deepcopy(dataloader_ohem_eval_set)
-            # modified version for eval OHEM top-k
-            dataloader_ohem_eval_set = reset_dataloader_batch_size(dataloader, ohem_batch_size, disable_augment=True)
 
+                results, maps, times, loss_per_image_acm = test.test(data_dict,
+                                                 batch_size=ohem_batch_size * 2,
+                                                 imgsz=imgsz_test,
+                                                 save_json=opt.save_json,
+                                                 model=ema.ema,
+                                                 iou_thres=hyp['iou_t'],
+                                                 single_cls=opt.single_cls,
+                                                 dataloader=dataloader_ohem_eval_set,
+                                                 save_dir=save_dir,
+                                                 verbose=False,
+                                                 plots=False,
+                                                 wandb_logger=wandb_logger,
+                                                 compute_loss=compute_loss,
+                                                 is_coco=is_coco,
+                                                 v5_metric=opt.v5_metric,
+                                                 hyp=hyp,
+                                                 model_name=model_name)
 
-            results, maps, times, loss_per_image_acm = test.test(data_dict,
-                                             batch_size=ohem_batch_size * 2,
-                                             imgsz=imgsz_test,
-                                             save_json=opt.save_json,
-                                             model=ema.ema,
-                                             iou_thres=hyp['iou_t'],
-                                             single_cls=opt.single_cls,
-                                             dataloader=dataloader_ohem_eval_set,
-                                             save_dir=save_dir,
-                                             verbose=False,
-                                             plots=False,
-                                             wandb_logger=wandb_logger,
-                                             compute_loss=compute_loss,
-                                             is_coco=is_coco,
-                                             v5_metric=opt.v5_metric,
-                                             hyp=hyp,
-                                             model_name=model_name)
+                # restore original dataloader from now on the dataloader will be modified inplace to accomodate OHEM top-k indices
+                dataloader_ohem_eval_set = copy.deepcopy(dataloader)
 
-            # restore original dataloader from now on the dataloader will be modified inplace to accomodate OHEM top-k indices
-            dataloader_ohem_eval_set = copy.deepcopy(dataloader)
+                # dataloader.batch_size = orig_dataloader_batch_size # restore
+                loss_per_image_acm = torch.stack(loss_per_image_acm)
+                val, top_k_indices = torch.topk(loss_per_image_acm.T, int(opt.ohem_topk * dataloader.dataset.__len__()))
+                dataloader.dataset.resample_ohem(top_k_indices=top_k_indices)
 
-            # dataloader.batch_size = orig_dataloader_batch_size # restore
-            loss_per_image_acm = torch.stack(loss_per_image_acm)
-            val, top_k_indices = torch.topk(loss_per_image_acm.T, int(opt.ohem_topk * dataloader.dataset.__len__()))
-            dataloader.dataset.resample_ohem(top_k_indices=top_k_indices)
-
-            print('OHEM epoch{} top-k {}'.format(epoch, top_k_indices))
+                print('OHEM epoch{} top-k {}'.format(epoch, val))
+            else:
+                print('OHEM OFF epoch{}'.format(epoch))
 
         # Scheduler
         lr = [x['lr'] for x in optimizer.param_groups]  # for tensorboard
@@ -734,9 +758,17 @@ def train(hyp, opt, device, tb_writer=None):
                 tb_writer.add_scalar(f'map_50% class {names[i]}', val, ni)
 
             # Update best mAP
-            fi = fitness(np.array(results).reshape(1, -1))  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
+            fi = fitness(np.array(results).reshape(1, -1), w=[0.0, 0.0, 1.0, 0.0])  # weighted combination of [P, R, mAP@.5, mAP@.5-.95]
             if fi > best_fitness:
                 best_fitness = fi
+                file_path = os.path.join(save_dir,
+                                         'best_fitness.txt')
+                formatted_line = f"{best_fitness.item():3e}\n"
+                # Open the file in append mode and write the new line
+                with open(file_path, 'a') as file:
+                    file.write(formatted_line)
+                # 'Class', 'Images', 'Labels', 'P', 'R', 'mAP@.5', 'mAP@.5:.95'
+
             wandb_logger.end_epoch(best_result=best_fitness == fi)
 
             # Save model
@@ -850,7 +882,7 @@ if __name__ == '__main__':
     parser.add_argument('--label-smoothing', type=float, default=0.0, help='Label smoothing epsilon')
     parser.add_argument('--upload_dataset', action='store_true', help='Upload dataset as W&B artifact table')
     parser.add_argument('--bbox_interval', type=int, default=-1, help='Set bounding-box image logging interval for W&B')
-    parser.add_argument('--save_period', type=int, default=-1, help='Log model after every "save_period" epoch')
+    parser.add_argument('--save-period', type=int, default=-1, help='Log model after every "save_period" epoch')
     parser.add_argument('--artifact_alias', type=str, default="latest", help='version of dataset artifact to be used')
     parser.add_argument('--freeze', nargs='+', type=int, default=[0], help='Freeze layers: backbone of yolov7=50, first3=0 1 2')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
@@ -883,6 +915,8 @@ if __name__ == '__main__':
     parser.add_argument('--ohem-start-ep', type=int, default=-1, help='Online Hard example by re-eval training set after N-iters and take top-K')
 
     parser.add_argument('--ohem-topk', type=float, default=0.7, help='')
+
+    parser.add_argument('--ohem-period', type=int, default=5, help='Online Hard example N epoces toggeling on/off duration')
 
     parser.add_argument('--nom-batch-size-grad-acm', type=int, default=64, help='')
 
@@ -1100,7 +1134,8 @@ FT : you need the --cfg of arch yaml because nc-classes are changing
 
 Overfit 640x640
 tir_od_overfit.yaml
---workers 8 --device 0 --batch-size 32 --data data/tir_od_overfit.yaml --img-size 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od_v7_overfit.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.1 --cache-images
+--workers 8 --device 0 --batch-size 32 --data data/tir_od_overfit.yaml --img-size 640 --weights /mnt/Data/hanoch/pretrained_coco_models/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od_v7_overfit.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --nosave --gamma-aug-prob 0.1 --cache-images
+--workers 8 --device 0 --batch-size 24 --data data/tir_od_overfit.yaml --img 640 640 --weights /mnt/Data/hanoch/pretrained_coco_models/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic_rnd_scaling.yaml --adam --linear-lr --norm-type single_image_percentile_0_1 --input-channels 1 --epochs 100 --gamma-aug-prob 0.1 --cache-images --image-weights --fl-gamma 1.5 --cosine-anneal --ohem-start-ep 10 --ohem-topk 0.7
 
 # 3 classe renew yolov7999 list
 --workers 8 --device 0 --batch-size 24 --data data/tir_od_center_roi_aug_list_train_cls.yaml --img 640 640 --weights /mnt/Data/hanoch/tir_frames_rois/yolov7.pt --cfg cfg/training/yolov7.yaml --name yolov7 --hyp hyp.tir_od.tiny_aug_gamma_scaling_before_mosaic_rnd_scaling_no_ota.yaml --adam --norm-type single_image_percentile_0_1 --input-channels 1 --linear-lr --epochs 100 --gamma-aug-prob 0.1 --cache-images --image-weights

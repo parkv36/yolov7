@@ -3,6 +3,8 @@ import pandas as pd
 from argparse import ArgumentParser
 import yaml
 import warnings
+from tqdm import tqdm
+from datetime import datetime, timezone
 warnings.warn = lambda *args,**kwargs: None
 
 def process_class_stats(file_path):
@@ -15,7 +17,7 @@ def process_class_stats(file_path):
 
     # Find the index where the last repetition of 'all' starts
     last_all_index = df[df['class_name'] == 'all'].index[-1]
-
+    max_map = max(df[df['class_name'] == 'all']['map50'])
     # Slice the DataFrame from the last 'all' row downward
     sliced_df = df.iloc[last_all_index:]
 
@@ -34,7 +36,8 @@ def process_class_stats(file_path):
     # Write the result to a CSV file
     # result_df.to_csv(output_csv, index=False)
 
-    return result_df
+    return result_df, max_map
+
 def main(args: list = None):
     parser = ArgumentParser()
     parser.add_argument('--path', type=str, default='/home/hanoch/projects/tir_od/runs/train', metavar='PATH',
@@ -90,13 +93,14 @@ def main(args: list = None):
         data = []
         root_dir = path
         # Iterate through all the subfolders
-        for subdir, dirs, files in os.walk(root_dir):
+        for subdir, dirs, files in tqdm(os.walk(root_dir)):
             # Check if 'results.txt' and 'hyp.yaml' exist in the current subdir
+            daytime_str = datetime.fromtimestamp(os.stat(subdir).st_ctime).strftime('%Y-%m-%d %H:%M')
             results_path = os.path.join(subdir, 'results.txt')
             hyp_path = os.path.join(subdir, 'hyp.yaml')
             opt_path = os.path.join(subdir, 'opt.yaml')
             per_class_results = os.path.join(subdir, 'class_stats.txt')
-
+            best_fitness_path = os.path.join(subdir, 'best_fitness.txt')
 
             if os.path.exists(results_path) and os.path.exists(hyp_path) and os.path.exists(opt_path):
                 # Get the last line from 'results.txt'
@@ -122,7 +126,7 @@ def main(args: list = None):
 
                 df_per_class_results = pd.DataFrame()
                 if os.path.exists(per_class_results):
-                    df_per_class_results = process_class_stats(per_class_results)
+                    df_per_class_results, max_map = process_class_stats(per_class_results)
 
                 # Add the result and the 'hyp.yaml' content into the data list
                 row = {
@@ -136,11 +140,22 @@ def main(args: list = None):
                 row.update(opt_data)
                 if not df_per_class_results.empty:
                     row.update(df_per_class_results.to_dict(orient='list'))
+                    row.update({'max_map50': max_map})
 
+                row.update({'daytime_str': daytime_str})
+                data.append(row)
+
+
+            if os.path.exists(best_fitness_path):
+                with open(best_fitness_path, 'r') as results_file:
+                    best_fitness = results_file.readlines()[-1].strip()
+                row.update({'best_map50': best_fitness})
                 data.append(row)
 
         # Convert the list of dictionaries to a pandas DataFrame
         df = pd.DataFrame(data)
+        df['date'] = pd.to_datetime(df['daytime_str'])
+        df = df.sort_values(by='date')
 
         # Save the DataFrame to a CSV file
         output_csv = 'runs_' + str(args.task) + '_summary.csv'

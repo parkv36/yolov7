@@ -14,7 +14,7 @@ obj_pw: 1.0  # obj BCELoss positive_weight
 iou_t: 0.6  # like the default in the code was 0.2 IoU training threshold
 anchor_t: 4.0  # anchor-multiple threshold
 anchors: 2  # HK TODO modify to 3    ------------------------   anchors per output layer (0 to ignore)  @@HK was 3
-fl_gamma: 3.0 #1.5  # focal loss gamma (efficientDet default gamma=1.5)
+fl_gamma: 1.5 #1.5  # focal loss gamma (efficientDet default gamma=1.5)
 hsv_h: 0.0  # image HSV-Hue augmentation (fraction)
 hsv_s: 0.0  # image HSV-Saturation augmentation (fraction)
 hsv_v: 0.0  # image HSV-Value augmentation (fraction)

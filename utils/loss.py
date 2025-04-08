@@ -647,14 +647,26 @@ class ComputeLoss:
 
 class ComputeLossOTA:
     # Compute losses
-    def __init__(self, model, autobalance=False, loss_weight=torch.tensor([])):
+    def __init__(self, model, autobalance=False, loss_weight=torch.tensor([]),
+                 multi_class_no_multi_label=False,
+                 multi_label_asymetric_focal_loss=False):
+
         super(ComputeLossOTA, self).__init__()
         device = next(model.parameters()).device  # get model device
         h = model.hyp  # hyperparameters
         if loss_weight.numel() > 0:
             raise ValueError('Not imp. yet')
+
+        self.multi_label_asymetric_focal_loss = multi_label_asymetric_focal_loss
+        self.multi_class_no_multi_label = multi_class_no_multi_label
         # Define criteria
-        BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+        if self.multi_class_no_multi_label:
+            xCEcls = nn.CrossEntropyLoss() #weight=loss_weight
+        else:
+            xCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
+
+        # Define criteria
+        # BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
         BCEobj = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['obj_pw']], device=device))
 
         # Class label smoothing https://arxiv.org/pdf/1902.04103.pdf eqn 3
@@ -663,12 +675,28 @@ class ComputeLossOTA:
         # Focal loss
         g = h['fl_gamma']  # focal loss gamma
         if g > 0:
-            BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            # BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
+            alpha = 0.25 # default by base code
+            if loss_weight.numel()>0:
+                alpha = loss_weight # Overide the default from the paper
+
+            if multi_label_asymetric_focal_loss:
+                xCEcls, BCEobj = (AsymmetricLoss(xCEcls, g,
+                                            alpha=alpha.to(device),
+                                            multi_class_no_multi_label=self.multi_class_no_multi_label,
+                                            multi_label_asymetric_focal_loss=self.multi_label_asymetric_focal_loss),
+                                  FocalLoss(BCEobj, g))
+            else:
+                xCEcls, BCEobj = (FocalLoss(xCEcls, g,
+                                       alpha=alpha,
+                                       multi_class_no_multi_label=self.multi_class_no_multi_label),
+                              FocalLoss(BCEobj, g))
+
 
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
         self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
-        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        self.xCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = xCEcls, BCEobj, model.gr, h, autobalance
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
@@ -707,7 +735,7 @@ class ComputeLossOTA:
                 if self.nc > 1:  # cls loss (only if multiple classes)
                     t = torch.full_like(ps[:, 5:], self.cn, device=device)  # targets
                     t[range(n), selected_tcls] = self.cp
-                    lcls += self.BCEcls(ps[:, 5:], t)  # BCE
+                    lcls += self.xCEcls(ps[:, 5:], t)  # BCE
 
                 # Append targets to text file
                 # with open('targets.txt', 'a') as file:
