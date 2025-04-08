@@ -1,4 +1,5 @@
 import argparse
+import copy
 import time
 from pathlib import Path
 
@@ -6,9 +7,12 @@ import cv2
 import torch
 import torch.backends.cudnn as cudnn
 from numpy import random
-
+import os
+import tifffile
+import copy
+import numpy as np
 from models.experimental import attempt_load
-from utils.datasets import LoadStreams, LoadImages
+from utils.datasets import LoadStreams, LoadImages, scaling_image
 from utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, \
     scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path
 from utils.plots import plot_one_box
@@ -17,10 +21,10 @@ from utils.torch_utils import select_device, load_classifier, time_synchronized,
 
 def detect(save_img=False):
     source, weights, view_img, save_txt, imgsz, trace = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace
-    save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
-    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
+    save_img = not opt.nosave #and not source.endswith('.txt')  # save inference images
+    webcam = source.isnumeric() or source.lower().startswith(  # removed HK or source.endswith('.txt')
         ('rtsp://', 'rtmp://', 'http://', 'https://'))
-
+    webcam = webcam and not source.endswith('.txt')
     # Directories
     save_dir = Path(increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok))  # increment run
     (save_dir / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
@@ -36,7 +40,7 @@ def detect(save_img=False):
     imgsz = check_img_size(imgsz, s=stride)  # check img_size
 
     if trace:
-        model = TracedModel(model, device, opt.img_size)
+        model = TracedModel(model, device, opt.img_size, opt.input_channels)
 
     if half:
         model.half()  # to FP16
@@ -54,7 +58,11 @@ def detect(save_img=False):
         cudnn.benchmark = True  # set True to speed up constant image size inference
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
-        dataset = LoadImages(source, img_size=imgsz, stride=stride)
+        dataset = LoadImages(source, img_size=imgsz, stride=stride,
+                             scaling_type=opt.norm_type, input_channels=opt.input_channels,
+                             no_tir_signal=opt.no_tir_signal,
+                             tir_channel_expansion=opt.tir_channel_expansion,
+                             rel_path_for_list_files=opt.rel_path_for_list_files)
 
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
@@ -62,15 +70,24 @@ def detect(save_img=False):
 
     # Run inference
     if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        model(torch.zeros(1, opt.input_channels, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
 
     t0 = time.time()
     for path, img, im0s, vid_cap in dataset:
+
+        if os.path.basename(path).split('.')[1] == 'tiff': # im0s only for plotting version
+            im0s = np.repeat(im0s[ :, :, np.newaxis], 3, axis=2) # convert GL to RGB by replication
+            im0s = scaling_image(im0s, scaling_type=opt.norm_type)
+            if im0s.max()<=1:
+                im0s = im0s*255
+
+            # im0s = copy.deepcopy(np.uint8(img.transpose(1,2,0) * 255.0))
+
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        # img /= 255.0  # 0 - 255 to 0.0 - 1.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
@@ -139,7 +156,13 @@ def detect(save_img=False):
             # Save results (image with detections)
             if save_img:
                 if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
+                    print(save_path,os.path.basename(save_path).split('.'))
+                    if os.path.basename(save_path).split('.')[1] == 'tiff':
+                        #print('ka')
+                        save_path = os.path.join(os.path.dirname(save_path), os.path.basename(save_path).split('.')[0] + '.png')
+                        cv2.imwrite(save_path, im0)
+                    else:
+                        cv2.imwrite(save_path, im0)
                     print(f" The image with the result is saved in: {save_path}")
                 else:  # 'video' or 'stream'
                     if vid_path != save_path:  # new video
@@ -183,10 +206,33 @@ if __name__ == '__main__':
     parser.add_argument('--name', default='exp', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
+    parser.add_argument('--norm-type', type=str, default='standardization',
+                        choices=['standardization', 'single_image_0_to_1', 'single_image_mean_std','single_image_percentile_0_255',
+                                 'single_image_percentile_0_1', 'remove+global_outlier_0_1'],
+                        help='Normalization approach')
+
+    parser.add_argument('--no-tir-signal', action='store_true', help='')
+
+    parser.add_argument('--tir-channel-expansion', action='store_true', help='drc_per_ch_percentile')
+
+    parser.add_argument('--input-channels', type=int, default=1, help='')
+
+    parser.add_argument('--save-path', default='', help='save to project/name')
+
+    parser.add_argument('--rel-path-for-list-files', default='/mnt/Data/hanoch/tir_frames_rois/yolo7_tir_data_all', help='')
+
+
+
     opt = parser.parse_args()
+
+    if opt.tir_channel_expansion: # operates over 3 channels
+        opt.input_channels = 3
+
+    if opt.tir_channel_expansion and opt.norm_type != 'single_image_percentile_0_1': # operates over 3 channels
+        print('Not a good combination')
+
     print(opt)
     #check_requirements(exclude=('pycocotools', 'thop'))
-
     with torch.no_grad():
         if opt.update:  # update all models (to fix SourceChangeWarning)
             for opt.weights in ['yolov7.pt']:
@@ -194,3 +240,24 @@ if __name__ == '__main__':
                 strip_optimizer(opt.weights)
         else:
             detect()
+#  --source yolov7/tir_od/fog_data_set.txt
+
+"""
+python detect.py --weights yolov7.pt --conf 0.25 --img-size 640 --source inference/images/horses.jpg
+python -u ./yolov7/detect.py --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --source /home/hanoch/projects/tir_frames_rois/png/Rotem_test_22c_dec18.png
+python -u ./yolov7/detect.py --weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_v20_Dec18_Test22C_20181127_223533_FS_210F_0001_5500_ROTEM_left_roi_220_4707.tiff
+--weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_v20_Dec18_Test22C_20181127_223533_FS_210F_0001_5500_ROTEM_left_roi_220_4707.tiff
+--weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR10_V50_OCT21_Test46A_ML_RD_IL_2021_08_05_14_48_05_FS_210_XGA_630_922_DENIS_right_roi_210_881.tiff
+--weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/yolo7_tir_data_all/TIR135_V80_JUL23_Test55A_SY_RD_US_2023_01_18_07_29_38_FS_50_XGA_0001_3562_Shahar_left_roi_50_1348.tiff
+
+--weights /mnt/Data/hanoch/runs/train/yolov7999/weights/best.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/fog/28_02_2019_16_05_01[1]_04783.tiff
+
+
+
+
+YOLO model
+--weights ./yolov7/yolov7.pt --conf 0.25 --img-size 640 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_od/Snipaste_2024-09-15_09-00-58_tir_135_TIR135_V80_JUL23_Test55A_SY_RD_US_2023_01_18_07_29_38_FS_50_XGA_0001_3562_Shahar_left_roi_50_1348.png
+
+--weights /mnt/Data/hanoch/runs/train/yolov7575/weights/best.pt --conf 0.01 --img-size 640 --input-channels 1 --device 0 --save-txt --norm-type single_image_percentile_0_1 --source /home/hanoch/projects/tir_frames_rois/tir_tiff_tiff_files/TIR8_V50_Test19G_Jul20_2018-12-06_13-39-17_FS_50F_0114_6368_ROTEM_right_roi_50_345.tiff
+
+"""
