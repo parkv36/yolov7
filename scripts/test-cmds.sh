@@ -1,0 +1,4 @@
+python -c "import cv2;print(cv2.cuda.getCudaEnabledDeviceCount())"
+python3 -c "import cv2;print(cv2.cuda.getCudaEnabledDeviceCount())"
+dpkg -l | grep "opencv"
+python -c "import torch;print(torch.cuda.is_available())"

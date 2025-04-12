@@ -1,0 +1,28 @@
+services:
+  app:
+    image: barisx/yolov7-cuda-opencv:latest
+    container_name: barisx-yolov7-training-container-v1.0.1
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      # Add environment variable to limit TensorFlow memory growth
+      - TF_MEMORY_ALLOCATION=0.9
+      # For PyTorch memory management
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+    working_dir: /app
+    volumes:
+      - ./yolov7-main:/app
+    command: "tail -f /dev/null"
+    ports:
+      - "5500:5000"
+      - "8080:8080"
+    ipc: host
+    stdin_open: true
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu,video,compute,utility]
+          memory: "15032385536"  # Use existing 90 percent of system memory
