@@ -36,20 +36,47 @@ MS COCO
 Docker environment (recommended)
 <details><summary> <b>Expand</b> </summary>
 
-``` shell
-# create the docker container, you can change the share memory size if you have more.
-nvidia-docker run --name yolov7 -it -v your_coco_path/:/coco/ -v your_code_path/:/yolov7 --shm-size=64g nvcr.io/nvidia/pytorch:21.08-py3
-
-# apt install required packages
-apt update
-apt install -y zip htop screen libgl1-mesa-glx
-
-# pip install required packages
-pip install seaborn thop
-
-# go to code folder
-cd /yolov7
+We create a cuda supported dockerfile for run it on docker container. First of all you need to run:
+```shell
+chmod +x install-nvidia-toolkit.sh
 ```
+Your existing machine to give a gpu capabilities to existing docker containers. It is going to download required packages after.
+```shell
+docker run --gpus all --rm -it barisx/yolov7-cuda-opencv:latest
+```
+
+After you can check it:
+```shell
+~ root# nvidia-smi
++---------------------------------------------------------------------------------------+
+| NVIDIA-SMI 535.183.01             Driver Version: 535.183.01   CUDA Version: 12.2     |
+|-----------------------------------------+----------------------+----------------------+
+| GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
+| Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
+|                                         |                      |               MIG M. |
+|=========================================+======================+======================|
+|   0  NVIDIA GeForce RTX 2080 ...    Off | 00000000:00:00.0 Off |                  N/A |
+| N/A   43C    P0              26W /  90W |      6MiB /  8192MiB |      0%      Default |
+|                                         |                      |                  N/A |
++-----------------------------------------+----------------------+----------------------+
+                                                                                         
++---------------------------------------------------------------------------------------+
+| Processes:                                                                            |
+|  GPU   GI   CI        PID   Type   Process name                            GPU Memory |
+|        ID   ID                                                             Usage      |
+|=======================================================================================|
++---------------------------------------------------------------------------------------+
+```
+
+If you want to check test:
+```shell
+bash scripts/test-cmds.sh
+1  # -1 if it not activate
+1  # -1 if it not activate
+True  # False if it not activate
+```
+
+It will download and run gpu supported docker container that means yolov7 can reach out your existing gpu and cuda support.
 
 </details>
 

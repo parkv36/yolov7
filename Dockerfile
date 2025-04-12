@@ -17,12 +17,15 @@ RUN apt upgrade --no-install-recommends -y openssl tar
 # Create working directory
 WORKDIR /app
 
-# install requirements
+# Install requirements
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 
-# install opencv with CUDA support
-COPY scripts .
+# Install OpenCV with CUDA support
+COPY . .
 RUN rm -rf ./workspace
-RUN bash ./build_opencv.sh
+RUN bash scripts/build_opencv.sh
+
+# Test CUDA and OpenCV support
+RUN bash scripts/test-cmds.sh
