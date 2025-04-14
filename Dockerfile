@@ -31,7 +31,7 @@ RUN bash scripts/build_opencv.sh
 RUN bash scripts/test-cmds.sh
 RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7.pt  # Recommend for lower specs
 # RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7x.pt
-# RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-w6.pt
+# RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-w6.pt  # Recommend for train_aux.py training
 # RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-e6.pt
 # RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-d6.pt
 RUN wget https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-e6e.pt  # Recommend for high specs
