@@ -41,8 +41,10 @@ We create a cuda supported dockerfile for run it on docker container. First of a
 chmod +x install-nvidia-toolkit.sh
 ```
 Your existing machine to give a gpu capabilities to existing docker containers. It is going to download required packages after.
+
+If you have trouble about can not see cuda in your existing machine try `privileged` parameter:
 ```shell
-docker run --gpus all --rm -it barisx/yolov7-cuda-opencv:latest
+docker run --gpus all --privileged --rm -it barisx/yolov7-cuda-opencv:latest
 ```
 
 After you can check it:

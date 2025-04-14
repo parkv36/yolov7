@@ -1,0 +1,1 @@
+sudo docker run --gpus all --privileged --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --rm -it aiws/yolov7-cuda-opencv:latest 
