@@ -44,7 +44,9 @@ Your existing machine to give a gpu capabilities to existing docker containers. 
 
 If you have trouble about can not see cuda in your existing machine try `privileged` parameter:
 ```shell
-docker run --gpus all --privileged --rm -it barisx/yolov7-cuda-opencv:latest
+docker run --gpus all -it --rm --ipc=host --ulimit memlock=-1 --ulimit stack=67108864 --privileged \
+-v /home/grkm/Documents/yolov7-cuda-opencv/PROJECTS/DATA \
+-v /home/grkm/Documents/yolov7-cuda-opencv/PROJECTS/RESULTS \
 ```
 
 After you can check it:
