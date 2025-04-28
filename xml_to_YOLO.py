@@ -119,8 +119,8 @@ def convert_xml2yolo(source_dir, target_dir, class_mapping):
         # print(f"Wrote {fname_out}")
 
 def main():
-    source_directory = "data/person"
-    target_directory = "data/yolo-labelled/person"
+    source_directory = "data/test"
+    target_directory = "data/yolo-labelled/test"
     convert_xml2yolo(source_directory, target_directory, class_mapping)
 
 if __name__ == '__main__':
