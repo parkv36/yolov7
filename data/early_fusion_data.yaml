@@ -1,5 +1,5 @@
-train: /path/to/train/rgb
-val: /path/to/val/rgb
+train: ../data/train/rgb/
+val: ../data/val/rgb/
 
 nc: 3
 names: ["car", "truck", "person"]
