@@ -241,7 +241,30 @@ class End2End(nn.Module):
         return x
 
 
+class FusionLayer(nn.Module):
+    def __init__(self, mode="manual"):
+        super().__init__()
+        self.mode = mode
+        if mode == "learned":
+            self.time_embedding = nn.Embedding(3, 8)  # 3 time categories
+            self.predictor = nn.Sequential(
+                nn.Linear(8, 16),
+                nn.ReLU(),
+                nn.Linear(16, 1),
+                nn.Sigmoid()
+            )
+        elif mode == "manual":
+            #TODO: toggle these ratios and see what works best
+            self.alpha_table = torch.tensor([0.7, 0.5, 0.3])  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
 
+    def forward(self, rgb, lwir, time_idx):
+        lwir = lwir.repeat(1, 3, 1, 1)  # Convert grayscale LWIR to 3-channel
+        if self.mode == "learned":
+            time_embed = self.time_embedding(time_idx)
+            alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
+        elif self.mode == "manual":
+            alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
+        return alpha * rgb + (1 - alpha) * lwir
 
 
 def attempt_load(weights, map_location=None):
