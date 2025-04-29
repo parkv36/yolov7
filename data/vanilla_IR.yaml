@@ -1,6 +1,5 @@
-#TODO: add paths based on gdrive path
-train: ../train/tir/
-val: ../val/tir/
+train: ../data/train/tir/
+val: ../data/val/tir/
 
 nc: 3
 
