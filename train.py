@@ -84,7 +84,7 @@ def train(hyp, opt, device, tb_writer=None):
     if pretrained:
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
-        ckpt = torch.load(weights, map_location=device,weights_only=False)  # load checkpoint
+        ckpt = torch.load(weights, map_location=device, weights_only=False)  # load checkpoint
         model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
@@ -333,9 +333,14 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
-        for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
-            ni = i + nb * epoch  # number integrated batches (since train start)
-            imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+        for i, batch in pbar:  # batch -------------------------------------------------------------
+            if model.fusion_type in ['mid', 'late']:
+                (rgb_imgs, lwir_imgs, time_idxs), targets, paths, shapes = batch
+                imgs = (rgb_imgs.to(device).float() / 255.0, lwir_imgs.to(device).float() / 255.0, time_idxs.to(device))  # tuple
+            else:
+                imgs, targets, paths, shapes = batch
+                imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+            ni = i + nb * epoch  # number integrated batches (since train started)
 
             # Warmup
             if ni <= nw:
