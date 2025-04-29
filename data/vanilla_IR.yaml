@@ -1,14 +1,14 @@
 #TODO: add paths based on gdrive path
-train: ./train/tir/
-val: ./val/tir/
+train: ../train/tir/
+val: ../val/tir/
 test:
-  - ./test/15m (50ft)/tir/
-  - ./test/30m (100ft)/tir/
-  - ./test/61m (200ft)/tir/
-  - ./test/76m (250ft)/tir/
-  - ./test/91m (300ft)/tir/
-  - ./test/106m (350ft)/tir/
-  - ./test/121m (400ft)/tir/
+  - ../test/15m (50ft)/tir/
+  - ../test/30m (100ft)/tir/
+  - ../test/61m (200ft)/tir/
+  - ../test/76m (250ft)/tir/
+  - ../test/91m (300ft)/tir/
+  - ../test/106m (350ft)/tir/
+  - ../test/121m (400ft)/tir/
 
 nc: 3
 
