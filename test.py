@@ -109,7 +109,7 @@ def test(data,
         targets = targets.to(device)
 
         if enable_label_remap and targets.shape[0]:
-            your_to_coco_list = [2, 7, 5]
+            your_to_coco_list = [2, 7, 0]
             your_to_coco_tensor = torch.tensor(your_to_coco_list, device=targets.device)
             targets[:, 1] = your_to_coco_tensor[targets[:, 1].long()]
 
@@ -133,7 +133,7 @@ def test(data,
             t1 += time_synchronized() - t
 
             if enable_label_remap:
-                # wanted_coco_classes = [2, 7, 5]  # car, truck, bus
+                # wanted_coco_classes = [2, 7, 0]  # car, truck, person
                 wanted_coco_classes = [2] # suppress to only car with bad dataset
 
                 for i in range(len(out)):
