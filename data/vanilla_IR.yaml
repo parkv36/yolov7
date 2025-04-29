@@ -3,4 +3,4 @@ val: ../data/val/tir/
 
 nc: 3
 
-names: ["car", "truck", "bus"]
+names: ["car", "truck", "person"]

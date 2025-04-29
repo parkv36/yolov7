@@ -3,4 +3,4 @@ val: ../data/val/rgb/
 
 nc: 3
 
-names: ["car", "truck", "bus"]
+names: ["car", "truck", "person"]
