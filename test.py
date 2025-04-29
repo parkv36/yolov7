@@ -40,7 +40,8 @@ def test(data,
          half_precision=True,
          trace=False,
          is_coco=False,
-         v5_metric=False):
+         v5_metric=False,
+         enable_label_remap=False):
     # Initialize/load model and set device
     training = model is not None
     if training:  # called by train.py
@@ -106,6 +107,12 @@ def test(data,
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
         targets = targets.to(device)
+
+        if enable_label_remap and targets.shape[0]:
+            your_to_coco_list = [2, 7, 5]
+            your_to_coco_tensor = torch.tensor(your_to_coco_list, device=targets.device)
+            targets[:, 1] = your_to_coco_tensor[targets[:, 1].long()]
+
         nb, _, height, width = img.shape  # batch size, channels, height, width
 
         with torch.no_grad():
@@ -124,6 +131,14 @@ def test(data,
             t = time_synchronized()
             out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
             t1 += time_synchronized() - t
+
+            if enable_label_remap:
+                # wanted_coco_classes = [2, 7, 5]  # car, truck, bus
+                wanted_coco_classes = [2] # suppress to only car with bad dataset
+
+                for i in range(len(out)):
+                    if out[i] is not None and len(out[i]):
+                        out[i] = out[i][torch.isin(out[i][:, 5].long(), torch.tensor(wanted_coco_classes, device=out[i].device))]
 
         # Statistics per image
         for si, pred in enumerate(out):
@@ -309,6 +324,7 @@ if __name__ == '__main__':
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
+    parser.add_argument('--enable-label-remap', action='store_true', help='enable label remapping for using default coco labels with your dataset')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
@@ -330,7 +346,8 @@ if __name__ == '__main__':
              save_hybrid=opt.save_hybrid,
              save_conf=opt.save_conf,
              trace=not opt.no_trace,
-             v5_metric=opt.v5_metric
+             v5_metric=opt.v5_metric,
+             enable_label_remap=opt.enable_label_remap,
              )
 
     elif opt.task == 'speed':  # speed benchmarks
