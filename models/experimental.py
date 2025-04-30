@@ -2,10 +2,64 @@ import numpy as np
 import random
 import torch
 import torch.nn as nn
+import cv2
+import os
 
 from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
 
+#TODO: complete and test symmetriccrossattention block
+class SymmetricCrossAttention(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.query_rgb = nn.Conv2d(channels, channels, kernel_size=1)
+        self.key_ir = nn.Conv2d(channels, channels, kernel_size=1)
+        self.value_ir = nn.Conv2d(channels, channels, kernel_size=1)
+        
+        self.query_ir = nn.Conv2d(channels, channels, kernel_size=1)
+        self.key_rgb = nn.Conv2d(channels, channels, kernel_size=1)
+        self.value_rgb = nn.Conv2d(channels, channels, kernel_size=1)
+        
+        self.gate = nn.Parameter(torch.zeros(1))
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        """
+        x: tuple (z_rgb, z_ir)
+        Each of shape [batch, channels, height, width]
+        """
+        z_rgb, z_ir = x
+        B, C, H, W = z_rgb.shape
+        
+        # Flatten spatially
+        # z_rgb_flat = z_rgb.view(B, C, -1).permute(0, 2, 1)
+        # z_ir_flat = z_ir.view(B, C, -1).permute(0, 2, 1) 
+
+        # Project features
+        q_rgb = self.query_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
+        k_ir = self.key_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
+        v_ir = self.value_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
+        
+        q_ir = self.query_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
+        k_rgb = self.key_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
+        v_rgb = self.value_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
+
+        # Cross Attention: RGB attends to IR
+        attn_rgb_to_ir = self.softmax(q_rgb @ k_ir.transpose(-2, -1) / (C ** 0.5))  # [B, HW, HW]
+        z_rgb_prime = attn_rgb_to_ir @ v_ir 
+
+        # Cross Attention: IR attends to RGB
+        attn_ir_to_rgb = self.softmax(q_ir @ k_rgb.transpose(-2, -1) / (C ** 0.5))
+        z_ir_prime = attn_ir_to_rgb @ v_rgb
+
+        # Reshape back
+        z_rgb_prime = z_rgb_prime.permute(0, 2, 1).view(B, C, H, W)
+        z_ir_prime = z_ir_prime.permute(0, 2, 1).view(B, C, H, W)
+
+        # Adaptive gating (Equation 3 in your description)
+        fused = torch.sigmoid(self.gate) * z_rgb_prime + (1 - torch.sigmoid(self.gate)) * z_ir_prime
+        
+        return fused
 
 class CrossConv(nn.Module):
     # Cross Convolution Downsample
@@ -264,8 +318,42 @@ class FusionLayer(nn.Module):
             alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
         elif self.mode == "manual":
             alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
+
+        #TODO: decide if i want to be saving images or not, change threshold
+        if self.training:  # Only save during training
+        # Save a few examples
+          if random.random() < .25:  # only 1% of batches
+            save_fused_tensor(alpha * rgb + (1 - alpha) * lwir)  # your save function
+
         return alpha * rgb + (1 - alpha) * lwir
 
+def save_fused_tensor(x_fused, idx=None):
+    """
+    Saves a fused tensor as a .jpg image.
+    
+    Args:
+        x_fused (Tensor): Tensor of shape (C, H, W) or (B, C, H, W)
+        idx (Optional[int]): An optional index for filename uniqueness
+    """
+    if isinstance(x_fused, torch.Tensor):
+        x_fused = x_fused.detach().cpu().numpy()
+
+    if x_fused.ndim == 4:
+        x_fused = x_fused[0]  # Take first image if batch
+
+    # (C, H, W) -> (H, W, C)
+    x_fused = np.transpose(x_fused, (1, 2, 0))
+    if x_fused.max() <= 1.0: # scale and normalize
+        x_fused = x_fused * 255.0
+    x_fused = np.clip(x_fused, 0, 255).astype(np.uint8)
+    x_fused = cv2.cvtColor(x_fused, cv2.COLOR_RGB2BGR)
+
+    # Generate a random name if no idx is given
+    if idx is None:
+        idx = random.randint(0, 999999)
+
+    save_path = os.path.join('fused_samples', f'fused_{idx}.jpg')
+    cv2.imwrite(save_path, x_fused)
 
 def attempt_load(weights, map_location=None):
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
@@ -291,5 +379,3 @@ def attempt_load(weights, map_location=None):
         for k in ['names', 'stride']:
             setattr(model, k, getattr(model[-1], k))
         return model  # return ensemble
-
-
