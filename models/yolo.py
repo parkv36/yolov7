@@ -597,7 +597,7 @@ class Model(nn.Module):
         self.info()
         logger.info('')
 
-    def forward(self, *args, augment=False, profile=False):
+    def forward(self, *args, augment=False, profile=False, targets=None):
         if augment:
             if len(args) != 1:
                 raise ValueError('Augmentation only supports single input')
@@ -627,8 +627,7 @@ class Model(nn.Module):
 
                 if self.fusion_type == 'early':
                     # EARLY: fuse in pixel space
-                    lwir_imgs = lwir_imgs.repeat(1, 3, 1, 1)
-                    x = self.feature_fusion(rgb_imgs, lwir_imgs, time_idxs)
+                    x = self.feature_fusion(rgb_imgs, lwir_imgs, time_idxs, targets=targets)
 
                 elif self.fusion_type == 'mid':
                     # MID: fuse features
@@ -938,6 +937,8 @@ if __name__ == '__main__':
     
     if opt.profile:
         img = torch.rand(1, 3, 640, 640).to(device)
+
+        #TODO: check if this works on paired images
         y = model(img, profile=True)
 
     # Profile

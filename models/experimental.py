@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import cv2
 import os
+from utils.general import xywh2xyxy, xyxy2xywh
+from utils.plots import plot_one_box
 
 from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
@@ -300,60 +302,87 @@ class FusionLayer(nn.Module):
         super().__init__()
         self.mode = mode
         if mode == "learned":
-            self.time_embedding = nn.Embedding(3, 8)  # 3 time categories
-            self.predictor = nn.Sequential(
-                nn.Linear(8, 16),
-                nn.ReLU(),
-                nn.Linear(16, 1),
-                nn.Sigmoid()
-            )
+            # self.time_embedding = nn.Embedding(3, 8)  # 3 time categories
+            # self.predictor = nn.Sequential(
+            #     nn.Linear(8, 16),
+            #     nn.ReLU(),
+            #     nn.Linear(16, 1),
+            #     nn.Sigmoid()
+            # )
+            self.alpha_table = nn.Parameter(torch.tensor([0.7, 0.5, 0.3],dtype=torch.float32))
         elif mode == "manual":
             #TODO: toggle these ratios and see what works best
-            self.alpha_table = torch.tensor([0.7, 0.5, 0.3])  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
+            self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
+   
+    def forward(self, rgb, lwir, time_idx, targets=None):
+        # if self.mode == "learned":
+        #     time_embed = self.time_embedding(time_idx)
+        #     alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
+        # elif self.mode == "manual":
+        #     alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
 
-    def forward(self, rgb, lwir, time_idx):
-        lwir = lwir.repeat(1, 3, 1, 1)  # Convert grayscale LWIR to 3-channel
-        if self.mode == "learned":
-            time_embed = self.time_embedding(time_idx)
-            alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
-        elif self.mode == "manual":
-            alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
+        alpha = self.alpha_table.to(dtype=rgb.dtype, device=rgb.device)[time_idx].view(-1, 1, 1, 1)
 
         #TODO: decide if i want to be saving images or not, change threshold
-        if self.training:  # Only save during training
-        # Save a few examples
-          if random.random() < .25:  # only 1% of batches
-            save_fused_tensor(alpha * rgb + (1 - alpha) * lwir)  # your save function
+        # if self.training:  # Only save during training
+        # # Save a few examples
+        
+        fused = alpha * rgb + (1 - alpha) * lwir
 
-        return alpha * rgb + (1 - alpha) * lwir
+        if not self.training and random.random() < .01:  # only 1% of batches
+            # save_fused_tensor(alpha * rgb + (1 - alpha) * lwir)
+            if targets is not None:
+                for i in range(rgb.shape[0]):  # for each image in batch
+                    matching_targets = targets[targets[:, 0] == i]
+                    self.save_fused_tensor(fused[i], targets=matching_targets)
+            else:
+                for i in range(rgb.shape[0]):
+                    self.save_fused_tensor(fused[i])
+        
+        return fused.to(dtype=rgb.dtype, device=rgb.device)
+    @staticmethod
+    def save_fused_tensor(x_fused, targets=None, idx=None):
+        """
+        Saves a fused tensor as a .jpg image with optional bounding boxes.
 
-def save_fused_tensor(x_fused, idx=None):
-    """
-    Saves a fused tensor as a .jpg image.
-    
-    Args:
-        x_fused (Tensor): Tensor of shape (C, H, W) or (B, C, H, W)
-        idx (Optional[int]): An optional index for filename uniqueness
-    """
-    if isinstance(x_fused, torch.Tensor):
-        x_fused = x_fused.detach().cpu().numpy()
+        Args:
+            x_fused (Tensor): (C, H, W)
+            targets (Tensor): (num_boxes, 6) -> (image_idx, class, x_center, y_center, width, height) normalized
+            idx (int): Optional index for filename uniqueness
+        """
+        # Detach and move to CPU if needed
+        if isinstance(x_fused, torch.Tensor):
+            x_fused = x_fused.detach().cpu().numpy()
 
-    if x_fused.ndim == 4:
-        x_fused = x_fused[0]  # Take first image if batch
+        # Convert from (C, H, W) to (H, W, C)
+        assert x_fused.ndim == 3, "Expected 3D tensor (C, H, W)"
+        img = np.transpose(x_fused, (1, 2, 0))
+        if img.max() <= 1.0:
+            img = (img * 255).astype(np.uint8)
+        else:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-    # (C, H, W) -> (H, W, C)
-    x_fused = np.transpose(x_fused, (1, 2, 0))
-    if x_fused.max() <= 1.0: # scale and normalize
-        x_fused = x_fused * 255.0
-    x_fused = np.clip(x_fused, 0, 255).astype(np.uint8)
-    x_fused = cv2.cvtColor(x_fused, cv2.COLOR_RGB2BGR)
+        h, w = img.shape[:2]
 
-    # Generate a random name if no idx is given
-    if idx is None:
-        idx = random.randint(0, 999999)
+        # Draw targets
+        if targets is not None and len(targets):
+            if isinstance(targets, torch.Tensor):
+                targets = targets.cpu().numpy()
+            boxes = xywh2xyxy(targets[:, 2:6])
+            boxes[:, [0, 2]] *= w
+            boxes[:, [1, 3]] *= h
 
-    save_path = os.path.join('fused_samples', f'fused_{idx}.jpg')
-    cv2.imwrite(save_path, x_fused)
+            for i, box in enumerate(boxes):
+                cls = int(targets[i][1])
+                plot_one_box(box, img, label=str(cls), color=[0, 255, 0])
+
+        # Save image
+        os.makedirs('fused_samples', exist_ok=True)
+        if idx is None:
+            idx = random.randint(0, 999999)
+        cv2.imwrite(os.path.join('fused_samples', f'fused_{idx}.jpg'), img)
+
 
 def attempt_load(weights, map_location=None):
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a

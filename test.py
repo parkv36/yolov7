@@ -75,12 +75,10 @@ def test(data,
         with open(data) as f:
             data = yaml.load(f, Loader=yaml.SafeLoader)
     check_dataset(data)  # check
-    #temp fix
-    print(data.get('fusion_type', 'None'))
-    model.fusion_type = data.get('fusion_type', 'None')
-    model.fusion_mode = 'manual'
+
     fusion_type = data.get('fusion_type', 'none')
     is_fusion = fusion_type in ['early', 'mid', 'late']
+    
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
@@ -147,7 +145,7 @@ def test(data,
                 if is_fusion:
                     if fusion_type == 'early':
                         (rgb_img, ir_img, time_idx) = img
-                        out, train_out = model(rgb_img,ir_img, time_idx)  # inference and training outputs
+                        out, train_out = model(rgb_img,ir_img, time_idx, targets=targets)  # inference and training outputs
                     elif fusion_type == 'mid':
                         #TODO: does mid fusion need to change?
                         pass
@@ -166,6 +164,8 @@ def test(data,
             # Compute loss
             if compute_loss:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
+
+
 
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels

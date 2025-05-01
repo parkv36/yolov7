@@ -245,7 +245,7 @@ def train(hyp, opt, device, tb_writer=None):
     dataloader, dataset = create_dataloader(train_path, imgsz, batch_size, gs, opt,
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
-                                            image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
+                                            image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '), fusion_type=model.fusion_type)
     mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
     assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
@@ -255,7 +255,7 @@ def train(hyp, opt, device, tb_writer=None):
         testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
-                                       pad=0.5, prefix=colorstr('val: '))[0]
+                                       pad=0.5, prefix=colorstr('val: '), fusion_type=model.fusion_type)[0]
 
         if not opt.resume:
             labels = np.concatenate(dataset.labels, 0)
@@ -335,13 +335,23 @@ def train(hyp, opt, device, tb_writer=None):
         optimizer.zero_grad()
         for i, batch in pbar:  # batch -------------------------------------------------------------
             if model.fusion_type in ['mid', 'late']:
+                # print(f"[DEBUG] len(batch) = {len(batch)}, batch types = {[type(x) for x in batch]}")
+                # print(f"[DEBUG] batch structure: {batch}")
                 (rgb_imgs, lwir_imgs, time_idxs), targets, paths, shapes = batch
                 imgs = (rgb_imgs.to(device).float() / 255.0, lwir_imgs.to(device).float() / 255.0, time_idxs.to(device))  # tuple
             else:
                 imgs, targets, paths, shapes = batch
-                imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
+                if isinstance(imgs, (tuple, list)):
+                    # Early fusion sometimes returns (img, time_idxs)
+                    if model.fusion_type == 'early':
+                        (rgb_imgs, lwir_imgs, time_idxs) = imgs
+                        imgs = (rgb_imgs.to(device).float() / 255.0, lwir_imgs.to(device).float() / 255.0, time_idxs.to(device))
+                    else:
+                        raise ValueError(f"Unexpected tuple in non-early fusion input shape: {type(imgs)}")
+                else:
+                    imgs = imgs.to(device).float() / 255.0  # uint8 to float32
+            
             ni = i + nb * epoch  # number integrated batches (since train started)
-
             # Warmup
             if ni <= nw:
                 xi = [0, nw]  # x interp
@@ -363,11 +373,17 @@ def train(hyp, opt, device, tb_writer=None):
 
             # Forward
             with amp.autocast(enabled=cuda):
-                pred = model(imgs)  # forward
+                pred = model(*imgs) if isinstance(imgs, (list, tuple)) else model(imgs)
+                    
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
-                    loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
+                    if isinstance(imgs, (tuple, list)):
+                        loss_imgs = imgs[0]  # RGB image tensor from (rgb, ir, tod)
+                    else:
+                        loss_imgs = imgs
+                    loss, loss_items = compute_loss_ota(pred, targets.to(device), loss_imgs)
                 else:
-                    loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    loss, loss_items = compute_loss(pred, targets.to(device))
+
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -389,12 +405,13 @@ def train(hyp, opt, device, tb_writer=None):
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
-                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
+                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs[0].shape[-1])
                 pbar.set_description(s)
 
                 # Plot
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
+                    #TODO: check if i need to make this support a tuple of images
                     Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
