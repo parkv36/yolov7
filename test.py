@@ -75,6 +75,12 @@ def test(data,
         with open(data) as f:
             data = yaml.load(f, Loader=yaml.SafeLoader)
     check_dataset(data)  # check
+    #temp fix
+    print(data.get('fusion_type', 'None'))
+    model.fusion_type = data.get('fusion_type', 'None')
+    model.fusion_mode = 'manual'
+    fusion_type = data.get('fusion_type', 'none')
+    is_fusion = fusion_type in ['early', 'mid', 'late']
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95
     niou = iouv.numel()
@@ -89,7 +95,7 @@ def test(data,
             model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
-                                       prefix=colorstr(f'{task}: '))[0]
+                                       prefix=colorstr(f'{task}: '), fusion_type=fusion_type)[0]
 
     if v5_metric:
         print("Testing with YOLOv5 AP metric...")
@@ -103,22 +109,58 @@ def test(data,
     loss = torch.zeros(3, device=device)
     jdict, stats, ap, ap_class, wandb_images = [], [], [], [], []
     for batch_i, (img, targets, paths, shapes) in enumerate(tqdm(dataloader, desc=s)):
-        img = img.to(device, non_blocking=True)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        if is_fusion:
+            rgb_img, ir_img, time_idx = img
+            rgb_img = rgb_img.to(device, non_blocking=True)
+            ir_img = ir_img.to(device, non_blocking=True)
+            time_idx = time_idx.to(device, non_blocking=True) if isinstance(time_idx, torch.Tensor) else time_idx
+
+            rgb_img = rgb_img.half() if half else rgb_img.float()  # uint8 to fp16/32
+            ir_img = ir_img.half() if half else ir_img.float()  # uint8 to fp16/32
+            rgb_img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            ir_img /= 255.0  # 0 - 255 to 0.0 - 1.0
+            img = (rgb_img, ir_img, time_idx)
+        else:
+            img = img.to(device, non_blocking=True)
+            img = img.half() if half else img.float()  # uint8 to fp16/32
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+
+        
         targets = targets.to(device)
 
         if enable_label_remap and targets.shape[0]:
             your_to_coco_list = [2, 7, 0]
             your_to_coco_tensor = torch.tensor(your_to_coco_list, device=targets.device)
             targets[:, 1] = your_to_coco_tensor[targets[:, 1].long()]
+        
+        if is_fusion:
+            nb = img[0].shape[0]  # batch size
+            _, _, height, width = img[0].shape  # batch size, channels, height, width
+        else:
+             nb, _, height, width = img.shape  # batch size, channels, height, width
 
-        nb, _, height, width = img.shape  # batch size, channels, height, width
 
         with torch.no_grad():
             # Run model
             t = time_synchronized()
-            out, train_out = model(img, augment=augment)  # inference and training outputs
+            if isinstance(img, (tuple, list)):
+                if is_fusion:
+                    if fusion_type == 'early':
+                        (rgb_img, ir_img, time_idx) = img
+                        out, train_out = model(rgb_img,ir_img, time_idx)  # inference and training outputs
+                    elif fusion_type == 'mid':
+                        #TODO: does mid fusion need to change?
+                        pass
+                    elif fusion_type == 'late':
+                        #TODO: does late fusion need to change?
+                        pass
+                    else:
+                        raise ValueError(f"Unknown fusion type: {fusion_type}")
+                else:
+                    raise ValueError("Model missing feature_fusion attribute but input is a tuple.")
+            else:
+                out, train_out = model(img, augment=augment)
+            
             t0 += time_synchronized() - t
 
             # Compute loss
@@ -155,7 +197,10 @@ def test(data,
 
             # Predictions
             predn = pred.clone()
-            scale_coords(img[si].shape[1:], predn[:, :4], shapes[si][0], shapes[si][1])  # native-space pred
+            if is_fusion:
+                scale_coords(rgb_img[si].shape[1:], predn[:, :4], shapes[si][0], shapes[si][1])  # native-space pred
+            else:
+                scale_coords(img[si].shape[1:], predn[:, :4], shapes[si][0], shapes[si][1])
 
             # Append to text file
             if save_txt:
@@ -175,7 +220,10 @@ def test(data,
                                  "scores": {"class_score": conf},
                                  "domain": "pixel"} for *xyxy, conf, cls in pred.tolist()]
                     boxes = {"predictions": {"box_data": box_data, "class_labels": names}}  # inference-space
-                    wandb_images.append(wandb_logger.wandb.Image(img[si], boxes=boxes, caption=path.name))
+                    if is_fusion:
+                        wandb_images.append(wandb_logger.wandb.Image(rgb_img[si], boxes=boxes, caption=path.name))
+                    else:
+                        wandb_images.append(wandb_logger.wandb.Image(img[si], boxes=boxes, caption=path.name))
             wandb_logger.log_training_progress(predn, path, names) if wandb_logger and wandb_logger.wandb_run else None
 
             # Append to pycocotools JSON dictionary
@@ -198,7 +246,10 @@ def test(data,
 
                 # target boxes
                 tbox = xywh2xyxy(labels[:, 1:5])
-                scale_coords(img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
+                if is_fusion:
+                    scale_coords(rgb_img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])  # native-space labels
+                else:
+                    scale_coords(img[si].shape[1:], tbox, shapes[si][0], shapes[si][1])
                 if plots:
                     confusion_matrix.process_batch(predn, torch.cat((labels[:, 0:1], tbox), 1))
 
@@ -228,10 +279,23 @@ def test(data,
 
         # Plot images
         if plots and batch_i < 3:
-            f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
-            Thread(target=plot_images, args=(img, targets, paths, f, names), daemon=True).start()
-            f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
-            Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
+            # predictions:
+            if is_fusion:
+                f_rgb = save_dir / f'test_batch{batch_i}_rgb_labels.jpg'
+                f_ir = save_dir / f'test_batch{batch_i}_lwir_labels.jpg'
+                Thread(target=plot_images, args=(rgb_img, targets.cpu(), paths, f_rgb, names), daemon=True).start()
+                Thread(target=plot_images, args=(ir_img, targets.cpu(), paths, f_ir, names), daemon=True).start()
+
+                f_rgb = save_dir / f'test_batch{batch_i}_rgb_pred.jpg'
+                f_ir = save_dir / f'test_batch{batch_i}_lwir_pred.jpg'
+                Thread(target=plot_images, args=(rgb_img, output_to_target(out), paths, f_rgb, names), daemon=True).start()
+                Thread(target=plot_images, args=(ir_img, output_to_target(out), paths, f_ir, names), daemon=True).start()
+            else:
+                print("not reading as fusion in this thread")
+                f = save_dir / f'test_batch{batch_i}_labels.jpg'  # labels
+                Thread(target=plot_images, args=(img, targets.cpu(), paths, f, names), daemon=True).start()
+                f = save_dir / f'test_batch{batch_i}_pred.jpg'  # predictions
+                Thread(target=plot_images, args=(img, output_to_target(out), paths, f, names), daemon=True).start()
 
     # Compute statistics
     stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
