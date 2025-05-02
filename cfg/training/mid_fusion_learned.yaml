@@ -4,7 +4,7 @@ depth_multiple: 1.0 # model depth multiple
 width_multiple: 1.0 # layer channel multiple
 
 fusion_type: mid # early or late fusion
-fusion_mode: manual
+fusion_mode: learned
 # anchors
 anchors:
   - [10, 13, 16, 30, 33, 23] # P3/8
@@ -81,7 +81,7 @@ backbone:
         [Conv, [64, 1, 1, None, 1, nn.LeakyReLU(0.1)]],
       ],
     ], # 7
-    [-1, 1, FusionLayer, ["manual"]], # 8
+    [-1, 1, FusionLayer, ["learned"]], # 8
     [-1, 1, MP, []], # 9
     [-1, 1, Conv, [64, 1, 1, None, 1, nn.LeakyReLU(0.1)]],
     [-2, 1, Conv, [64, 1, 1, None, 1, nn.LeakyReLU(0.1)]],
