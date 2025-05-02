@@ -11,22 +11,58 @@ from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
 
 class DualLayer(nn.Module):
-    def __init__(self, rgb_branch: nn.Module, lwir_branch: nn.Module):
+    def __init__(self, rgb_branch, lwir_branch):
         super().__init__()
         self.rgb_branch = rgb_branch
         self.lwir_branch = lwir_branch
 
     def forward(self, x):
-        if not isinstance(x, (tuple, list)) or len(x) < 2:
-            raise TypeError("DualLayer expects input as (rgb_x, lwir_x, ...). Got: {}".format(type(x)))
+        print(f"[DualLayer] Received input: len={len(x)}, types={[type(e) for e in x]}")
 
-        rgb_x, lwir_x, *rest = x  # Unpack modality features and optional extra (e.g. time index)
+        if not isinstance(x, (list, tuple)):
+            raise ValueError(f"DualLayer expected tuple/list input, got {type(x)}")
 
+        # Case 1: (rgb, lwir, time_idx)
+        if len(x) == 3 and all(isinstance(i, torch.Tensor) for i in x):
+            rgb_x, lwir_x, time_idx = x
+
+        # Case 2: ([rgb, time], [lwir, time])
+        elif len(x) == 2 and all(isinstance(i, (list, tuple)) and len(i) == 2 for i in x):
+            (rgb_x, rgb_time), (lwir_x, lwir_time) = x
+            if not torch.equal(rgb_time, lwir_time):
+                raise ValueError("Mismatched time_idx in DualLayer inputs.")
+            time_idx = rgb_time
+
+        # Case 3: N * [(feat, time_idx)]
+        elif all(isinstance(i, (list, tuple)) and len(i) == 2 for i in x):
+            feats, times = zip(*x)
+            if not all(torch.equal(t, times[0]) for t in times):
+                raise ValueError("Mismatched time_idx across inputs to DualLayer.")
+            time_idx = times[0]
+            n = len(feats) // 2
+            rgb_x = torch.cat(feats[:n], dim=1)
+            lwir_x = torch.cat(feats[n:], dim=1)
+
+        # Case 4: List of (rgb_feat, lwir_feat, time_idx) tuples
+        elif all(isinstance(e, (tuple, list)) and len(e) == 3 for e in x):
+            rgb_feats, lwir_feats, times = zip(*x)
+            time_idx = times[0]
+            if not all(torch.equal(t, time_idx) for t in times):
+                raise ValueError(f"Time indices are not all equal: {[t.item() for t in times]}")
+            rgb_x = torch.cat(rgb_feats, dim=1)
+            lwir_x = torch.cat(lwir_feats, dim=1)
+
+        else:
+            raise ValueError(
+                f"DualLayer expected (rgb, lwir, time_idx), ([rgb, time], [lwir, time]), or N*[(feat, time)], got: {[type(e) for e in x]}"
+            )
+
+        # Process each branch separately
         rgb_out = self.rgb_branch(rgb_x)
         lwir_out = self.lwir_branch(lwir_x)
 
-        # Pass forward tuple, preserving optional components like time index
-        return (rgb_out, lwir_out, *rest)
+        # No fusion: return the tuple for downstream use
+        return (rgb_out, lwir_out, time_idx)
 
 
 #TODO: complete and test symmetriccrossattention block

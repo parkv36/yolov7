@@ -656,6 +656,15 @@ class Model(nn.Module):
                     x = (rgb_feats, lwir_feats, time_idxs)
                 else:
                     raise ValueError(f"Unsupported fusion type: {self.fusion_type}")
+            elif len(args) == 2 and all(isinstance(a, (list, tuple)) and len(a) == 2 for a in args):
+                (rgb_imgs, rgb_time), (lwir_imgs, lwir_time) = args
+                if not torch.equal(rgb_time, lwir_time):
+                    raise ValueError("Mismatched time_idx inputs")
+                time_idxs = rgb_time
+                x = (rgb_imgs, lwir_imgs, time_idxs)
+            elif len(args) == 3:
+                rgb_imgs, lwir_imgs, time_idxs = args
+                x = (rgb_imgs, lwir_imgs, time_idxs) 
             else:
                 raise ValueError(f"Expected 1 or 3 inputs, got {len(args)}")
             
@@ -695,8 +704,12 @@ class Model(nn.Module):
                 if isinstance(m, FusionLayer):
                     x = m(x, targets=targets)
                 else:
+                    
                     x = m(x)
             else:
+                if isinstance(x, (list, tuple)):
+                    print(f"[Forwarding to {m.__class__.__name__}] len(x): {len(x)}, types: {[type(e) for e in x]}")
+
                 x = m(x)
 
             # print(f"Layer ({m.__class__.__name__}): output shape = {x.shape if isinstance(x, torch.Tensor) else [e.shape for e in x]}")
@@ -933,9 +946,14 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             rgb_class = eval(rgb_class) if isinstance(rgb_class, str) else rgb_class
             lwir_class = eval(lwir_class) if isinstance(lwir_class, str) else lwir_class
 
-            # Sanitize args
-            rgb_args, c2 = sanitize_args(rgb_class, rgb_args, ch_in, no, n, gw, gd)
-            lwir_args, _ = sanitize_args(lwir_class, lwir_args, ch_in, no, n, gw, gd)
+            if isinstance(ch_in, int):
+                ch_in_rgb = ch_in_lwir = ch_in
+            else:
+                ch_in_rgb = ch_in[0]
+                ch_in_lwir = ch_in[1]
+
+            rgb_args, c2 = sanitize_args(rgb_class, rgb_args, ch_in_rgb, no, n, gw, gd)
+            lwir_args, _ = sanitize_args(lwir_class, lwir_args, ch_in_lwir, no, n, gw, gd)
 
             rgb_layer = rgb_class(*rgb_args)
             lwir_layer = lwir_class(*lwir_args)
