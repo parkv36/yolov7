@@ -10,6 +10,16 @@ from utils.plots import plot_one_box
 from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
 
+class DualLayer(nn.Module):
+    def __init__(self, rgb_layer, ir_layer):
+        super().__init__()
+        self.rgb_layer = rgb_layer
+        self.ir_layer = ir_layer
+    
+    def forward(self, rgb_x, ir_x):
+        return self.rgb_layer(rgb_x), self.ir_layer(ir_x)
+
+
 #TODO: complete and test symmetriccrossattention block
 class SymmetricCrossAttention(nn.Module):
     def __init__(self, channels):
@@ -30,6 +40,8 @@ class SymmetricCrossAttention(nn.Module):
         x: tuple (z_rgb, z_ir)
         Each of shape [batch, channels, height, width]
         """
+        if not isinstance(x, tuple):
+            raise ValueError("Input x should be a tuple of (z_rgb, z_ir)")
         z_rgb, z_ir = x
         B, C, H, W = z_rgb.shape
         
@@ -46,19 +58,18 @@ class SymmetricCrossAttention(nn.Module):
         k_rgb = self.key_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
         v_rgb = self.value_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
 
-        # Cross Attention: RGB attends to IR
+        # RGB attends to IR
         attn_rgb_to_ir = self.softmax(q_rgb @ k_ir.transpose(-2, -1) / (C ** 0.5))  # [B, HW, HW]
         z_rgb_prime = attn_rgb_to_ir @ v_ir 
 
-        # Cross Attention: IR attends to RGB
+        # IR attends to RGB
         attn_ir_to_rgb = self.softmax(q_ir @ k_rgb.transpose(-2, -1) / (C ** 0.5))
         z_ir_prime = attn_ir_to_rgb @ v_rgb
 
-        # Reshape back
         z_rgb_prime = z_rgb_prime.permute(0, 2, 1).view(B, C, H, W)
         z_ir_prime = z_ir_prime.permute(0, 2, 1).view(B, C, H, W)
 
-        # Adaptive gating (Equation 3 in your description)
+        # Adaptive gating (Equation 3)
         fused = torch.sigmoid(self.gate) * z_rgb_prime + (1 - torch.sigmoid(self.gate)) * z_ir_prime
         
         return fused
@@ -314,12 +325,13 @@ class FusionLayer(nn.Module):
             #TODO: toggle these ratios and see what works best
             self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
    
-    def forward(self, rgb, lwir, time_idx, targets=None):
+    def forward(self, x, targets=None):
         # if self.mode == "learned":
         #     time_embed = self.time_embedding(time_idx)
         #     alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
         # elif self.mode == "manual":
         #     alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
+        rgb, lwir, time_idx = x
 
         alpha = self.alpha_table.to(dtype=rgb.dtype, device=rgb.device)[time_idx].view(-1, 1, 1, 1)
 

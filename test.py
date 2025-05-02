@@ -143,15 +143,9 @@ def test(data,
             t = time_synchronized()
             if isinstance(img, (tuple, list)):
                 if is_fusion:
-                    if fusion_type == 'early':
+                    if fusion_type in ['early', 'mid', 'late']:
                         (rgb_img, ir_img, time_idx) = img
                         out, train_out = model(rgb_img,ir_img, time_idx, targets=targets)  # inference and training outputs
-                    elif fusion_type == 'mid':
-                        #TODO: does mid fusion need to change?
-                        pass
-                    elif fusion_type == 'late':
-                        #TODO: does late fusion need to change?
-                        pass
                     else:
                         raise ValueError(f"Unknown fusion type: {fusion_type}")
                 else:

@@ -334,22 +334,15 @@ def train(hyp, opt, device, tb_writer=None):
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
         for i, batch in pbar:  # batch -------------------------------------------------------------
-            if model.fusion_type in ['mid', 'late']:
-                # print(f"[DEBUG] len(batch) = {len(batch)}, batch types = {[type(x) for x in batch]}")
-                # print(f"[DEBUG] batch structure: {batch}")
-                (rgb_imgs, lwir_imgs, time_idxs), targets, paths, shapes = batch
-                imgs = (rgb_imgs.to(device).float() / 255.0, lwir_imgs.to(device).float() / 255.0, time_idxs.to(device))  # tuple
-            else:
-                imgs, targets, paths, shapes = batch
-                if isinstance(imgs, (tuple, list)):
-                    # Early fusion sometimes returns (img, time_idxs)
-                    if model.fusion_type == 'early':
-                        (rgb_imgs, lwir_imgs, time_idxs) = imgs
-                        imgs = (rgb_imgs.to(device).float() / 255.0, lwir_imgs.to(device).float() / 255.0, time_idxs.to(device))
-                    else:
-                        raise ValueError(f"Unexpected tuple in non-early fusion input shape: {type(imgs)}")
+            imgs, targets, paths, shapes = batch
+            if isinstance(imgs, (tuple, list)):
+                if model.fusion_type in ['early', 'mid', 'late']:
+                    (rgb_imgs, lwir_imgs, time_idxs) = imgs
+                    imgs = (rgb_imgs.to(device).float() / 255.0, lwir_imgs.to(device).float() / 255.0, time_idxs.to(device))
                 else:
-                    imgs = imgs.to(device).float() / 255.0  # uint8 to float32
+                    raise ValueError(f"Unexpected tuple in unkown fusion input shape: {type(imgs)}")
+            else:
+                imgs = imgs.to(device).float() / 255.0
             
             ni = i + nb * epoch  # number integrated batches (since train started)
             # Warmup

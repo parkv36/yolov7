@@ -516,25 +516,11 @@ class Model(nn.Module):
             self.yaml_file = Path(cfg).name
             with open(cfg) as f:
                 self.yaml = yaml.load(f, Loader=yaml.SafeLoader)  # model dict
-        self.fusion_mode = self.yaml.get('fusion_mode', "manual")  # "learned", "manual", or None
+        # self.fusion_mode = self.yaml.get('fusion_mode', "manual")  # "learned", "manual", or None
         self.fusion_type = self.yaml.get('fusion_type', None)  # "early", "mid", "late", or None
 
-        if self.fusion_type in ['early', 'mid']:
-            self.feature_fusion = FusionLayer(mode=self.fusion_mode)
-
-        if self.fusion_type == 'early':
-            self.rgb_stem = nn.Identity()  # No need for extra stems if doing raw fusion
-            self.lwir_stem = nn.Identity()
-        #TODO: probably want to change mid fusion approach
-        elif self.fusion_type == 'mid':
-            self.rgb_stem = nn.Sequential(
-                Conv(3, 32, 3, 2),
-                Conv(32, 64, 3, 2),
-            )
-            self.lwir_stem = nn.Sequential(
-                Conv(3, 32, 3, 2),
-                Conv(32, 64, 3, 2),
-            )
+        # if self.fusion_type in ['early', 'mid']:
+        #     self.feature_fusion = FusionLayer(mode=self.fusion_mode)
 
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
@@ -544,7 +530,12 @@ class Model(nn.Module):
         if anchors:
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
+        
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+        self.model_ir = None
+        if self.fusion_type in ['late']:
+            #TODO: complete late fusion 
+            self.model_ir = parse_model(deepcopy(self.yaml), ch=[ch], ir=True)  # model, savelist
         self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
@@ -625,118 +616,153 @@ class Model(nn.Module):
             elif len(args) == 3:
                 rgb_imgs, lwir_imgs, time_idxs = args
 
-                if self.fusion_type == 'early':
-                    # EARLY: fuse in pixel space
-                    x = self.feature_fusion(rgb_imgs, lwir_imgs, time_idxs, targets=targets)
+                # if self.fusion_type == 'early':
+                #     # EARLY: fuse in pixel space
+                #     x = self.feature_fusion(rgb_imgs, lwir_imgs, time_idxs, targets=targets)
 
-                elif self.fusion_type == 'mid':
-                    # MID: fuse features
-                    rgb_feats = self.rgb_stem(rgb_imgs)
-                    lwir_feats = self.lwir_stem(lwir_imgs.repeat(1, 3, 1, 1))
-                    x = self.feature_fusion(rgb_feats, lwir_feats, time_idxs)
+                # elif self.fusion_type == 'mid' or self.fusion_type == 'late':
+                #     rgb_feats = rgb_imgs
+                #     lwir_feats = lwir_imgs
+                #     x = (rgb_feats, lwir_feats, time_idxs)
 
-                elif self.fusion_type == 'late':
-                    # LATE: no fusion yet
+                if self.fusion_type in ['early', 'mid', 'late']:
                     rgb_feats = rgb_imgs
                     lwir_feats = lwir_imgs
                     x = (rgb_feats, lwir_feats, time_idxs)
-
                 else:
                     raise ValueError(f"Unsupported fusion type: {self.fusion_type}")
             else:
                 raise ValueError(f"Expected 1 or 3 inputs, got {len(args)}")
             
-            return self.forward_once(x, profile)  # single-scale inference, train
+            if self.fusion_type == 'early':
+                # EARLY: fuse in pixel space
+                x = self.forward_once(x, profile=profile, targets=targets)  # forward
+            else:
+                return self.forward_once(x, profile)  # single-scale inference, train
 
-    def forward_once(self, x, profile=False):
-        y, dt = [], []  # outputs
+    def forward_once(self, x, profile=False, targets=None):
+        y, dt = [], []
 
-        if isinstance(x, tuple) and self.fusion_type == 'late':
-            # Late fusion, x = (rgb_feats, lwir_feats, time_idxs)
-            rgb_feats, lwir_feats, time_idxs = x
+        for m in self.model:
+            # Handle input routing from previous layers
+            if m.f != -1:
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
 
-            # Run backbone on each modality separately
-            y_rgb = None
-            y_lwir = None
+            # Optional: trace early exit
+            if getattr(self, 'traced', False):
+                if isinstance(m, (Detect, IDetect, IAuxDetect, IKeypoint)):
+                    break
 
-            for m in self.model:
-                if m.f != -1:
-                    rgb_feats = y_rgb[m.f] if isinstance(m.f, int) else [rgb_feats if j == -1 else y_rgb[j] for j in m.f]
-                    lwir_feats = y_lwir[m.f] if isinstance(m.f, int) else [lwir_feats if j == -1 else y_lwir[j] for j in m.f]
-
-                rgb_feats = m(rgb_feats)
-                lwir_feats = m(lwir_feats)
-
-                y_rgb = rgb_feats
-                y_lwir = lwir_feats
-
-            # Late fusion at bounding box level:
-            # Simple idea: average boxes and scores
-            fused_out = 0.5 * (rgb_feats[0] + lwir_feats[0])
-
-            return fused_out, None
-        
-            #TODO: test if this approach with profiling functions
-            # rgb_feats, lwir_feats, time_idxs = x
-
-            # y_rgb = []
-            # y_lwir = []
-            # dt = []
-
-            # for m in self.model:
-            #     if m.f != -1:
-            #         rgb_feats = y_rgb[m.f] if isinstance(m.f, int) else [rgb_feats if j == -1 else y_rgb[j] for j in m.f]
-            #         lwir_feats = y_lwir[m.f] if isinstance(m.f, int) else [lwir_feats if j == -1 else y_lwir[j] for j in m.f]
-
-            #     if profile:
-            #         c = isinstance(m, (Detect, IDetect, IAuxDetect, IBin))
-            #         o = thop.profile(m, inputs=(rgb_feats.copy() if c else rgb_feats,), verbose=False)[0] / 1E9 * 2 if thop else 0
-            #         for _ in range(10):
-            #             m(rgb_feats.copy() if c else rgb_feats)
-            #         t = time_synchronized()
-            #         for _ in range(10):
-            #             m(rgb_feats.copy() if c else rgb_feats)
-            #         dt.append((time_synchronized() - t) * 100)
-            #         print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
-
-            #     rgb_feats = m(rgb_feats)
-            #     lwir_feats = m(lwir_feats)
-
-            #     y_rgb.append(rgb_feats if hasattr(m, 'i') and m.i in self.save else None)
-            #     y_lwir.append(lwir_feats if hasattr(m, 'i') and m.i in self.save else None)
-
-            # fused_out = 0.5 * (rgb_feats[0] + lwir_feats[0])
-            
-        else:
-            for m in self.model:
-                if m.f != -1:  # if not from previous layer
-                    x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
-
-                if not hasattr(self, 'traced'):
-                    self.traced=False
-
-                if self.traced:
-                    if isinstance(m, Detect) or isinstance(m, IDetect) or isinstance(m, IAuxDetect) or isinstance(m, IKeypoint):
-                        break
-
-                if profile:
-                    c = isinstance(m, (Detect, IDetect, IAuxDetect, IBin))
-                    o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPS
-                    for _ in range(10):
-                        m(x.copy() if c else x)
-                    t = time_synchronized()
-                    for _ in range(10):
-                        m(x.copy() if c else x)
-                    dt.append((time_synchronized() - t) * 100)
-                    print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
-
-                x = m(x)  # run
-                
-                y.append(x if m.i in self.save else None)  # save output
-
+            # Profiling
             if profile:
-                print('%.1fms total' % sum(dt))
-            return x
+                is_head = isinstance(m, (Detect, IDetect, IAuxDetect, IBin))
+                o = thop.profile(m, inputs=(x if is_head else x,), verbose=False)[0] / 1E9 * 2 if thop else 0
+                for _ in range(10): m(x)
+                t = time_synchronized()
+                for _ in range(10): m(x)
+                dt.append((time_synchronized() - t) * 100)
+                print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
+
+            # Run the module
+            if self.fusion_type and self.fusion_type == 'early':
+                x = m(x, targets=targets)  # run with targets
+            else:
+                x = m(x)
+
+            # Save outputs if required
+            y.append(x if m.i in self.save else None)
+
+        if profile:
+            print('%.1fms total' % sum(dt))
+
+        return x
+
+        # if isinstance(x, tuple) and self.fusion_type == 'mid':
+        #     # feature fusion
+        #     rgb_feats, lwir_feats, time_idxs = x
+
+        #     # Run backbone on each modality separately
+        #     y_rgb = []
+        #     y_lwir = []
+
+        #     for m in self.model:
+        #         if m.f != -1:
+        #             rgb_feats = y_rgb[m.f] if isinstance(m.f, int) else [rgb_feats if j == -1 else y_rgb[j] for j in m.f]
+        #             lwir_feats = y_lwir[m.f] if isinstance(m.f, int) else [lwir_feats if j == -1 else y_lwir[j] for j in m.f]
+
+        #         rgb_feats = m(rgb_feats)
+        #         lwir_feats = m(lwir_feats)
+
+        #         y_rgb = rgb_feats
+        #         y_lwir = lwir_feats
+
+        #     # Late fusion at bounding box level:
+        #     # Simple idea: average boxes and scores
+        #     fused_out = 0.5 * (rgb_feats[0] + lwir_feats[0])
+
+        #     return fused_out, None
+        
+        #     #TODO: test if this approach with profiling functions
+        #     # rgb_feats, lwir_feats, time_idxs = x
+
+        #     # y_rgb = []
+        #     # y_lwir = []
+        #     # dt = []
+
+        #     # for m in self.model:
+        #     #     if m.f != -1:
+        #     #         rgb_feats = y_rgb[m.f] if isinstance(m.f, int) else [rgb_feats if j == -1 else y_rgb[j] for j in m.f]
+        #     #         lwir_feats = y_lwir[m.f] if isinstance(m.f, int) else [lwir_feats if j == -1 else y_lwir[j] for j in m.f]
+
+        #     #     if profile:
+        #     #         c = isinstance(m, (Detect, IDetect, IAuxDetect, IBin))
+        #     #         o = thop.profile(m, inputs=(rgb_feats.copy() if c else rgb_feats,), verbose=False)[0] / 1E9 * 2 if thop else 0
+        #     #         for _ in range(10):
+        #     #             m(rgb_feats.copy() if c else rgb_feats)
+        #     #         t = time_synchronized()
+        #     #         for _ in range(10):
+        #     #             m(rgb_feats.copy() if c else rgb_feats)
+        #     #         dt.append((time_synchronized() - t) * 100)
+        #     #         print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
+
+        #     #     rgb_feats = m(rgb_feats)
+        #     #     lwir_feats = m(lwir_feats)
+
+        #     #     y_rgb.append(rgb_feats if hasattr(m, 'i') and m.i in self.save else None)
+        #     #     y_lwir.append(lwir_feats if hasattr(m, 'i') and m.i in self.save else None)
+
+        #     # fused_out = 0.5 * (rgb_feats[0] + lwir_feats[0])
+            
+        # else:
+        #     for m in self.model:
+        #         if m.f != -1:  # if not from previous layer
+        #             x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+
+        #         if not hasattr(self, 'traced'):
+        #             self.traced=False
+
+        #         if self.traced:
+        #             if isinstance(m, Detect) or isinstance(m, IDetect) or isinstance(m, IAuxDetect) or isinstance(m, IKeypoint):
+        #                 break
+
+        #         if profile:
+        #             c = isinstance(m, (Detect, IDetect, IAuxDetect, IBin))
+        #             o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPS
+        #             for _ in range(10):
+        #                 m(x.copy() if c else x)
+        #             t = time_synchronized()
+        #             for _ in range(10):
+        #                 m(x.copy() if c else x)
+        #             dt.append((time_synchronized() - t) * 100)
+        #             print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
+
+        #         x = m(x)  # run
+                
+        #         y.append(x if m.i in self.save else None)  # save output
+
+        #     if profile:
+        #         print('%.1fms total' % sum(dt))
+        #     return x
 
     def _initialize_biases(self, cf=None):  # initialize biases into Detect(), cf is class frequency
         # https://arxiv.org/abs/1708.02002 section 3.3
@@ -908,7 +934,41 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         else:
             c2 = ch[f]
 
-        m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+        if m is FusionLayer:
+            c2 = ch[f[0]]
+            if args is None:
+                args = []
+            elif isinstance(args, dict):
+                m_ = m(**args)
+            else:
+                m_ = m(*args)
+        elif m is DualLayer:
+            c2 = ch[f[0]]
+            rgb_class, rgb_args = args[0]
+            lwir_class, lwir_args = args[1]
+
+            try:
+                rgb_class = eval(rgb_class) if isinstance(rgb_class, str) else rgb_class
+            except NameError:
+                raise ValueError(f"Unknown class: {rgb_class}")
+            try: 
+                lwir_class = eval(lwir_class) if isinstance(lwir_class, str) else lwir_class
+            except NameError:
+                raise ValueError(f"Unknown class: {lwir_class}")
+
+            rgb_args = [eval(a) if isinstance(a, str) else a for a in rgb_args]
+            lwir_args = [eval(a) if isinstance(a, str) else a for a in lwir_args]
+        
+            rgb_layer =  rgb_class(*rgb_args)
+            lwir_layer = lwir_class(*lwir_args)
+            m_ = DualLayer(rgb_layer, lwir_layer)
+        elif m is SymmetricCrossAttention:
+            c2 = ch[f[0]]
+            
+            m_ = SymmetricCrossAttention(*args)
+        else:
+            m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+
         t = str(m)[8:-2].replace('__main__.', '')  # module type
         np = sum([x.numel() for x in m_.parameters()])  # number params
         m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params

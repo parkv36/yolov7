@@ -572,8 +572,8 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
 
         hyp = self.hyp
         mosaic = self.mosaic and random.random() < hyp['mosaic']
-        fusion_mode = getattr(self, 'fusion_type', None)
-        use_fusion = fusion_mode in ['early', 'mid', 'late']
+        fusion_type = getattr(self, 'fusion_type', None)
+        use_fusion = fusion_type in ['early', 'mid', 'late']
 
         if mosaic:
             if use_fusion:
