@@ -319,6 +319,7 @@ class IAuxDetect(nn.Module):
         super(IAuxDetect, self).__init__()
         self.nc = nc  # number of classes
         self.no = nc + 5  # number of outputs per anchor
+        print(f"anchors = {anchors}, nc = {self.nc}, na = {self.na}, no = {self.no}")
         self.nl = len(anchors)  # number of detection layers
         self.na = len(anchors[0]) // 2  # number of anchors
         self.grid = [torch.zeros(1)] * self.nl  # init grid
@@ -531,6 +532,9 @@ class Model(nn.Module):
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
         
+        if isinstance(self.yaml['anchors'], torch.Tensor):
+            self.yaml['anchors'] = self.yaml['anchors'].tolist()
+
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
         self.model_ir = None
         if self.fusion_type in ['late']:
@@ -541,9 +545,13 @@ class Model(nn.Module):
 
         # Build strides, anchors
         m = self.model[-1]  # Detect()
+
         if isinstance(m, Detect):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            if self.fusion_type in ['early', 'mid', 'late']:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(2, ch, s, s), torch.zeros(2, ch, s, s), torch.zeros(2, dtype=torch.long))])
+            else:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
@@ -551,7 +559,15 @@ class Model(nn.Module):
             # print('Strides: %s' % m.stride.tolist())
         if isinstance(m, IDetect):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            if self.fusion_type in ['early', 'mid', 'late']:
+                out = self.forward(torch.zeros(1, ch, s, s), torch.zeros(1, ch, s, s), torch.zeros(1, dtype=torch.long))
+                for i, x_ in enumerate(out):
+                    print(f"out[{i}] = {None if x_ is None else x_.shape}")
+                if not isinstance(out, (list, tuple)):
+                    out = [out]              
+                m.stride = torch.tensor([s / x.shape[-2] for x in out])
+            else:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
@@ -559,7 +575,10 @@ class Model(nn.Module):
             # print('Strides: %s' % m.stride.tolist())
         if isinstance(m, IAuxDetect):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
+            if self.fusion_type in ['early', 'mid', 'late']:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s), torch.zeros(1, ch, s, s), torch.zeros(1, dtype=torch.long))])
+            else:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
             #print(m.stride)
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
@@ -568,7 +587,10 @@ class Model(nn.Module):
             # print('Strides: %s' % m.stride.tolist())
         if isinstance(m, IBin):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            if self.fusion_type in ['early', 'mid', 'late']:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s), torch.zeros(1, ch, s, s), torch.zeros(1, dtype=torch.long))])
+            else:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
@@ -576,7 +598,10 @@ class Model(nn.Module):
             # print('Strides: %s' % m.stride.tolist())
         if isinstance(m, IKeypoint):
             s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            if self.fusion_type in ['early', 'mid', 'late']:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s), torch.zeros(1, ch, s, s), torch.zeros(1, dtype=torch.long))])
+            else:
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
             check_anchor_order(m)
             m.anchors /= m.stride.view(-1, 1, 1)
             self.stride = m.stride
@@ -610,12 +635,12 @@ class Model(nn.Module):
                 y.append(yi)
             return torch.cat(y, 1), None  # augmented inference, train
         else:
+            # print(args)
             if len(args) == 1:
                 # Single input (legacy)
                 x = args[0]
             elif len(args) == 3:
                 rgb_imgs, lwir_imgs, time_idxs = args
-
                 # if self.fusion_type == 'early':
                 #     # EARLY: fuse in pixel space
                 #     x = self.feature_fusion(rgb_imgs, lwir_imgs, time_idxs, targets=targets)
@@ -636,7 +661,7 @@ class Model(nn.Module):
             
             if self.fusion_type == 'early':
                 # EARLY: fuse in pixel space
-                x = self.forward_once(x, profile=profile, targets=targets)  # forward
+                return self.forward_once(x, profile, targets=targets)  # forward
             else:
                 return self.forward_once(x, profile)  # single-scale inference, train
 
@@ -647,7 +672,7 @@ class Model(nn.Module):
             # Handle input routing from previous layers
             if m.f != -1:
                 x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]
-
+            
             # Optional: trace early exit
             if getattr(self, 'traced', False):
                 if isinstance(m, (Detect, IDetect, IAuxDetect, IKeypoint)):
@@ -663,11 +688,18 @@ class Model(nn.Module):
                 dt.append((time_synchronized() - t) * 100)
                 print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
 
+            # print(f"Layer ({m.__class__.__name__}): input shape = {x.shape if isinstance(x, torch.Tensor) else [e.shape for e in x]}")
+
             # Run the module
             if self.fusion_type and self.fusion_type == 'early':
-                x = m(x, targets=targets)  # run with targets
+                if isinstance(m, FusionLayer):
+                    x = m(x, targets=targets)
+                else:
+                    x = m(x)
             else:
                 x = m(x)
+
+            # print(f"Layer ({m.__class__.__name__}): output shape = {x.shape if isinstance(x, torch.Tensor) else [e.shape for e in x]}")
 
             # Save outputs if required
             y.append(x if m.i in self.save else None)
@@ -873,112 +905,139 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
     no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
 
-    layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
-    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
-        m = eval(m) if isinstance(m, str) else m  # eval strings
-        for j, a in enumerate(args):
-            try:
-                args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-            except:
-                pass
+    context = {'nc': nc, 'anchors': anchors}
 
-        n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        if m in [nn.Conv2d, Conv, RobustConv, RobustConv2, DWConv, GhostConv, RepConv, RepConv_OREPA, DownC, 
-                 SPP, SPPF, SPPCSPC, GhostSPPCSPC, MixConv2d, Focus, Stem, GhostStem, CrossConv, 
-                 Bottleneck, BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
-                 RepBottleneck, RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC,  
-                 Res, ResCSPA, ResCSPB, ResCSPC, 
-                 RepRes, RepResCSPA, RepResCSPB, RepResCSPC, 
-                 ResX, ResXCSPA, ResXCSPB, ResXCSPC, 
-                 RepResX, RepResXCSPA, RepResXCSPB, RepResXCSPC, 
-                 Ghost, GhostCSPA, GhostCSPB, GhostCSPC,
-                 SwinTransformerBlock, STCSPA, STCSPB, STCSPC,
-                 SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC]:
-            c1, c2 = ch[f], args[0]
-            if c2 != no:  # if not output
-                c2 = make_divisible(c2 * gw, 8)
+    layers, save, c2 = [], [], ch[-1]
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):
+        m = eval(m) if isinstance(m, str) else m
+        args = resolve_args(safe_eval_args(args), context)
+        n = max(round(n * gd), 1) if n > 1 else n
 
-            args = [c1, c2, *args[1:]]
-            if m in [DownC, SPPCSPC, GhostSPPCSPC, 
-                     BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
-                     RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC, 
-                     ResCSPA, ResCSPB, ResCSPC, 
-                     RepResCSPA, RepResCSPB, RepResCSPC, 
-                     ResXCSPA, ResXCSPB, ResXCSPC, 
-                     RepResXCSPA, RepResXCSPB, RepResXCSPC,
-                     GhostCSPA, GhostCSPB, GhostCSPC,
-                     STCSPA, STCSPB, STCSPC,
-                     ST2CSPA, ST2CSPB, ST2CSPC]:
-                args.insert(2, n)  # number of repeats
-                n = 1
-        elif m is nn.BatchNorm2d:
-            args = [ch[f]]
-        elif m is Concat:
-            c2 = sum([ch[x] for x in f])
-        elif m is Chuncat:
-            c2 = sum([ch[x] for x in f])
-        elif m is Shortcut:
-            c2 = ch[f[0]]
-        elif m is Foldcut:
-            c2 = ch[f] // 2
-        elif m in [Detect, IDetect, IAuxDetect, IBin, IKeypoint]:
-            args.append([ch[x] for x in f])
-            if isinstance(args[1], int):  # number of anchors
-                args[1] = [list(range(args[1] * 2))] * len(f)
-        elif m is ReOrg:
-            c2 = ch[f] * 4
-        elif m is Contract:
-            c2 = ch[f] * args[0] ** 2
-        elif m is Expand:
-            c2 = ch[f] // args[0] ** 2
+        # Infer channels
+        if isinstance(f, int):
+            ch_in = ch[f]
         else:
-            c2 = ch[f]
+            ch_in = sum([ch[x] for x in f]) if isinstance(f, list) else ch[f]
 
+        # Special modules
         if m is FusionLayer:
-            c2 = ch[f[0]]
-            if args is None:
-                args = []
-            elif isinstance(args, dict):
-                m_ = m(**args)
+            if i == 0:
+                c2 = 3
             else:
-                m_ = m(*args)
+                c2 = ch_in
+            m_ = m(*args) if isinstance(args, list) else m(**args)
         elif m is DualLayer:
-            c2 = ch[f[0]]
             rgb_class, rgb_args = args[0]
             lwir_class, lwir_args = args[1]
 
-            try:
-                rgb_class = eval(rgb_class) if isinstance(rgb_class, str) else rgb_class
-            except NameError:
-                raise ValueError(f"Unknown class: {rgb_class}")
-            try: 
-                lwir_class = eval(lwir_class) if isinstance(lwir_class, str) else lwir_class
-            except NameError:
-                raise ValueError(f"Unknown class: {lwir_class}")
+            rgb_class = eval(rgb_class) if isinstance(rgb_class, str) else rgb_class
+            lwir_class = eval(lwir_class) if isinstance(lwir_class, str) else lwir_class
 
-            rgb_args = [eval(a) if isinstance(a, str) else a for a in rgb_args]
-            lwir_args = [eval(a) if isinstance(a, str) else a for a in lwir_args]
-        
-            rgb_layer =  rgb_class(*rgb_args)
+            # Sanitize args
+            rgb_args, c2 = sanitize_args(rgb_class, rgb_args, ch_in, no, n, gw, gd)
+            lwir_args, _ = sanitize_args(lwir_class, lwir_args, ch_in, no, n, gw, gd)
+
+            rgb_layer = rgb_class(*rgb_args)
             lwir_layer = lwir_class(*lwir_args)
             m_ = DualLayer(rgb_layer, lwir_layer)
         elif m is SymmetricCrossAttention:
-            c2 = ch[f[0]]
-            
-            m_ = SymmetricCrossAttention(*args)
+            c2 = m_.out_channels #TODO: figure out what to put here
+            m_ = m(*args)
+        elif m in [Detect, IDetect, IAuxDetect, IBin, IKeypoint]:
+            # Skip sanitize_args for detection heads
+            if len(args) < 3:
+                args.append([ch[x] for x in f] if isinstance(f, list) else [ch[f]])
+            m_ = m(*args)
         else:
-            m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+            # args, c2 = sanitize_args(m, args, ch_in, no, n, gw, gd)
+            # m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)
+            args, c2 = sanitize_args(m, args, ch_in, no, n, gw, gd)
+            m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)
 
-        t = str(m)[8:-2].replace('__main__.', '')  # module type
-        np = sum([x.numel() for x in m_.parameters()])  # number params
-        m_.i, m_.f, m_.type, m_.np = i, f, t, np  # attach index, 'from' index, type, number params
-        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))  # print
-        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+        # Logging
+        t = str(m)[8:-2].replace('__main__.', '')
+        np = sum([x.numel() for x in m_.parameters()])
+        m_.i, m_.f, m_.type, m_.np = i, f, t, np
+        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (i, f, n, np, t, args))
+
+        save.extend(x % i for x in ([f] if isinstance(f, int) else f) if x != -1)
         layers.append(m_)
         if i == 0:
             ch = []
-        ch.append(c2)
+        if c2 is not None:
+            ch.append(c2)
+        else:
+            raise ValueError(f"Invalid channel output for layer {i}: {c2}")
+
     return nn.Sequential(*layers), sorted(save)
+
+
+def resolve_args(args, context):
+    """Recursively resolve symbolic strings like 'nc' or 'anchors' in args using context dict."""
+    if isinstance(args, list):
+        return [resolve_args(a, context) for a in args]
+    elif isinstance(args, str) and args in context:
+        return context[args]
+    else:
+        return args
+
+def sanitize_args(m, args, ch_in, no=0, n=1, gw=1.0, gd=1.0):
+    args = args.copy()  # prevent modifying original list
+
+    # Handle convolutional and composite block types
+    if m in [nn.Conv2d, Conv, RobustConv, RobustConv2, DWConv, GhostConv, RepConv, RepConv_OREPA, DownC, 
+             SPP, SPPF, SPPCSPC, GhostSPPCSPC, MixConv2d, Focus, Stem, GhostStem, CrossConv, 
+             Bottleneck, BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
+             RepBottleneck, RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC,  
+             Res, ResCSPA, ResCSPB, ResCSPC, 
+             RepRes, RepResCSPA, RepResCSPB, RepResCSPC, 
+             ResX, ResXCSPA, ResXCSPB, ResXCSPC, 
+             RepResX, RepResXCSPA, RepResXCSPB, RepResXCSPC, 
+             Ghost, GhostCSPA, GhostCSPB, GhostCSPC,
+             SwinTransformerBlock, STCSPA, STCSPB, STCSPC,
+             SwinTransformer2Block, ST2CSPA, ST2CSPB, ST2CSPC]:
+        
+        c2 = args[0]
+        if c2 != no:  # adjust for detection layer output
+            c2 = make_divisible(c2 * gw, 8)
+        args = [ch_in, c2, *args[1:]]
+
+        if m in [DownC, SPPCSPC, GhostSPPCSPC, 
+                 BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
+                 RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC, 
+                 ResCSPA, ResCSPB, ResCSPC, 
+                 RepResCSPA, RepResCSPB, RepResCSPC, 
+                 ResXCSPA, ResXCSPB, ResXCSPC, 
+                 RepResXCSPA, RepResXCSPB, RepResXCSPC,
+                 GhostCSPA, GhostCSPB, GhostCSPC,
+                 STCSPA, STCSPB, STCSPC,
+                 ST2CSPA, ST2CSPB, ST2CSPC]:
+            args.insert(2, n)  # insert repeat count after in/out channels
+            n = 1
+    elif m is nn.BatchNorm2d:
+        args = [ch_in]
+        c2 = ch_in
+    elif m is Contract:
+        c2 = ch_in * args[0] ** 2
+    elif m is Expand:
+        c2 = ch_in // args[0] ** 2
+    elif m is ReOrg:
+        c2 = ch_in * 4
+    else:
+        c2 = ch_in
+
+    return args, c2
+
+def safe_eval_args(arg_list):
+    if isinstance(arg_list, list):
+        return [safe_eval_args(a) for a in arg_list]
+    elif isinstance(arg_list, str):
+        try:
+            return eval(arg_list)
+        except Exception:
+            return arg_list
+    else:
+        return arg_list
 
 
 if __name__ == '__main__':

@@ -11,13 +11,22 @@ from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
 
 class DualLayer(nn.Module):
-    def __init__(self, rgb_layer, ir_layer):
+    def __init__(self, rgb_branch: nn.Module, lwir_branch: nn.Module):
         super().__init__()
-        self.rgb_layer = rgb_layer
-        self.ir_layer = ir_layer
-    
-    def forward(self, rgb_x, ir_x):
-        return self.rgb_layer(rgb_x), self.ir_layer(ir_x)
+        self.rgb_branch = rgb_branch
+        self.lwir_branch = lwir_branch
+
+    def forward(self, x):
+        if not isinstance(x, (tuple, list)) or len(x) < 2:
+            raise TypeError("DualLayer expects input as (rgb_x, lwir_x, ...). Got: {}".format(type(x)))
+
+        rgb_x, lwir_x, *rest = x  # Unpack modality features and optional extra (e.g. time index)
+
+        rgb_out = self.rgb_branch(rgb_x)
+        lwir_out = self.lwir_branch(lwir_x)
+
+        # Pass forward tuple, preserving optional components like time index
+        return (rgb_out, lwir_out, *rest)
 
 
 #TODO: complete and test symmetriccrossattention block
@@ -325,13 +334,21 @@ class FusionLayer(nn.Module):
             #TODO: toggle these ratios and see what works best
             self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
    
+    @property
+    def out_channels(self):
+        return self.rgb_out_channels
+
     def forward(self, x, targets=None):
         # if self.mode == "learned":
         #     time_embed = self.time_embedding(time_idx)
         #     alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
         # elif self.mode == "manual":
         #     alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
-        rgb, lwir, time_idx = x
+
+        if targets is not None:
+            (rgb, lwir, time_idx) = x[0]
+        else:
+            (rgb, lwir, time_idx) = x
 
         alpha = self.alpha_table.to(dtype=rgb.dtype, device=rgb.device)[time_idx].view(-1, 1, 1, 1)
 
@@ -350,6 +367,8 @@ class FusionLayer(nn.Module):
             else:
                 for i in range(rgb.shape[0]):
                     self.save_fused_tensor(fused[i])
+
+        # print(f"[FusionLayer] output shape: {out.shape}")  # Debug line
         
         return fused.to(dtype=rgb.dtype, device=rgb.device)
     @staticmethod
