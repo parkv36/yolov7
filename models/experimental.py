@@ -17,7 +17,7 @@ class DualLayer(nn.Module):
         self.lwir_branch = lwir_branch
 
     def forward(self, x):
-        print(f"[DualLayer] Received input: len={len(x)}, types={[type(e) for e in x]}")
+        # print(f"[DualLayer] Received input: len={len(x)}, types={[type(e) for e in x]}") debug line
 
         if not isinstance(x, (list, tuple)):
             raise ValueError(f"DualLayer expected tuple/list input, got {type(x)}")

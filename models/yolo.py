@@ -400,7 +400,6 @@ class IAuxDetect(nn.Module):
         return out
     
     def fuse(self):
-        print("IAuxDetect.fuse")
         # fuse ImplicitA and Convolution
         for i in range(len(self.m)):
             c1,c2,_,_ = self.m[i].weight.shape
@@ -707,8 +706,8 @@ class Model(nn.Module):
                     
                     x = m(x)
             else:
-                if isinstance(x, (list, tuple)):
-                    print(f"[Forwarding to {m.__class__.__name__}] len(x): {len(x)}, types: {[type(e) for e in x]}")
+                # if isinstance(x, (list, tuple)): - debug
+                #     print(f"[Forwarding to {m.__class__.__name__}] len(x): {len(x)}, types: {[type(e) for e in x]}")
 
                 x = m(x)
 
