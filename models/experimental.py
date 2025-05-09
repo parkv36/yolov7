@@ -88,7 +88,7 @@ class SymmetricCrossAttention(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
 
         if mode == "learned":
-            self.time_proj = nn.Linear(time_dim, channels)
+            self.time_proj = nn.Linear(time_dim, 2 * channels)
             self.gate_proj = nn.Sequential(
                 nn.Conv2d(2 * channels, 1, kernel_size=1),
             )
