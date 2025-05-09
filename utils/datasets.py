@@ -809,6 +809,7 @@ def load_ir_image(self, index):
     lwir_img = cv2.imread(lwir_path, cv2.IMREAD_GRAYSCALE)
     assert lwir_img is not None, 'Image Not Found ' + lwir_path
     lwir_img = np.expand_dims(lwir_img, axis=-1)
+    #TODO: should we support other, more semantically correct ways to align channels?
     lwir_img = np.repeat(lwir_img, 3, axis=2)
     return load_image_complete(self, lwir_img)
 

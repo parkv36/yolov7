@@ -8,6 +8,7 @@ from utils.general import xywh2xyxy, xyxy2xywh
 from utils.plots import plot_one_box
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import torch.nn.functional as F
 
 from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
@@ -69,8 +70,11 @@ class DualLayer(nn.Module):
 
 #TODO: complete and test symmetriccrossattention block
 class SymmetricCrossAttention(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, time_dim=3, mode="manual"):
         super().__init__()
+        self.mode = mode
+        self.channels = channels
+        
         self.query_rgb = nn.Conv2d(channels, channels, kernel_size=1)
         self.key_ir = nn.Conv2d(channels, channels, kernel_size=1)
         self.value_ir = nn.Conv2d(channels, channels, kernel_size=1)
@@ -78,48 +82,80 @@ class SymmetricCrossAttention(nn.Module):
         self.query_ir = nn.Conv2d(channels, channels, kernel_size=1)
         self.key_rgb = nn.Conv2d(channels, channels, kernel_size=1)
         self.value_rgb = nn.Conv2d(channels, channels, kernel_size=1)
-        
-        self.gate = nn.Parameter(torch.zeros(1))
+
         self.softmax = nn.Softmax(dim=-1)
 
-    def forward(self, x):
-        """
-        x: tuple (z_rgb, z_ir)
-        Each of shape [batch, channels, height, width]
-        """
-        if not isinstance(x, tuple):
-            raise ValueError("Input x should be a tuple of (z_rgb, z_ir)")
-        z_rgb, z_ir = x
-        B, C, H, W = z_rgb.shape
-        
-        # Flatten spatially
-        # z_rgb_flat = z_rgb.view(B, C, -1).permute(0, 2, 1)
-        # z_ir_flat = z_ir.view(B, C, -1).permute(0, 2, 1) 
+        if mode == "learned":
+            self.time_proj = nn.Linear(time_dim, channels)
+            self.gate_proj = nn.Sequential(
+                nn.Conv2d(2 * channels, 1, kernel_size=1),
+            )
+            # Can potentially add gate complexity if we want to learn a more complex gate projection
+        elif mode == "manual":
+            self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))
+        else:
+            raise ValueError(f"Unsupported mode '{mode}'")
 
-        # Project features
+    def forward(self, x, targets=None):
+        if targets is not None:
+            z_rgb, z_ir, time_idx = x[0]
+        else:
+            z_rgb, z_ir, time_idx = x
+
+        B, C, H, W = z_rgb.shape
+
+        # === 1. Cross Attention ===
         q_rgb = self.query_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
         k_ir = self.key_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
         v_ir = self.value_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
-        
+
         q_ir = self.query_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
         k_rgb = self.key_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
         v_rgb = self.value_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
 
-        # RGB attends to IR
-        attn_rgb_to_ir = self.softmax(q_rgb @ k_ir.transpose(-2, -1) / (C ** 0.5))  # [B, HW, HW]
-        z_rgb_prime = attn_rgb_to_ir @ v_ir 
-
-        # IR attends to RGB
+        attn_rgb_to_ir = self.softmax(q_rgb @ k_ir.transpose(-2, -1) / (C ** 0.5))
         attn_ir_to_rgb = self.softmax(q_ir @ k_rgb.transpose(-2, -1) / (C ** 0.5))
+
+        z_rgb_prime = attn_rgb_to_ir @ v_ir
         z_ir_prime = attn_ir_to_rgb @ v_rgb
 
         z_rgb_prime = z_rgb_prime.permute(0, 2, 1).view(B, C, H, W)
         z_ir_prime = z_ir_prime.permute(0, 2, 1).view(B, C, H, W)
 
-        # Adaptive gating (Equation 3)
-        fused = torch.sigmoid(self.gate) * z_rgb_prime + (1 - torch.sigmoid(self.gate)) * z_ir_prime
-        
-        return fused
+        # === 2. Fusion ===
+        if self.mode == "manual":
+            alpha = self.alpha_table.to(dtype=z_rgb.dtype, device=z_rgb.device)[time_idx].view(-1, 1, 1, 1)
+            fused = alpha * z_rgb_prime + (1 - alpha) * z_ir_prime
+        else:  # learned gating
+            if time_idx.ndim == 1:
+                time_onehot = F.one_hot(time_idx, num_classes=3).float()  # [B, 3]
+            else:
+                time_onehot = time_idx.float()
+            t_proj = self.time_proj(time_onehot).unsqueeze(-1).unsqueeze(-1)  # [B, C, 1, 1]
+
+            z_fusion = torch.cat([z_rgb_prime, z_ir_prime], dim=1)  # [B, 2C, H, W]
+            gate_logits = self.gate_proj(z_fusion + t_proj.expand(-1, -1, H, W))  # [B, 1, H, W]
+            gate = torch.sigmoid(gate_logits)
+            fused = gate * z_rgb_prime + (1 - gate) * z_ir_prime
+
+        if not self.training and random.random() < 0.01:
+            if targets is not None:
+                for i in range(z_rgb.shape[0]):
+                    matching_targets = targets[targets[:, 0] == i]
+                    self.save_fused_tensor(fused[i], targets=matching_targets)
+            else:
+                for i in range(z_rgb.shape[0]):
+                    self.save_fused_tensor(fused[i])
+
+        return fused.to(dtype=z_rgb.dtype, device=z_rgb.device)
+    
+    @property
+    def out_channels(self):
+        return self.channels
+
+    def save_fused_tensor(self, x, targets=None):
+        # TODO: add in tensor saving logic
+        pass
 
 class CrossConv(nn.Module):
     # Cross Convolution Downsample
@@ -372,10 +408,6 @@ class FusionLayer(nn.Module):
             #TODO: toggle these ratios and see what works best
             self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
    
-    @property
-    def out_channels(self):
-        return self.rgb_out_channels
-
     def forward(self, x, targets=None):
         # if self.mode == "learned":
         #     time_embed = self.time_embedding(time_idx)

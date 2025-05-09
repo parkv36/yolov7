@@ -932,7 +932,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             ch_in = sum([ch[x] for x in f]) if isinstance(f, list) else ch[f]
 
         # Special modules
-        if m is FusionLayer:
+        if m in [FusionLayer,SymmetricCrossAttention]:
             if i == 0:
                 c2 = 3
             else:
@@ -957,9 +957,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             rgb_layer = rgb_class(*rgb_args)
             lwir_layer = lwir_class(*lwir_args)
             m_ = DualLayer(rgb_layer, lwir_layer)
-        elif m is SymmetricCrossAttention:
-            c2 = m_.out_channels #TODO: figure out what to put here
-            m_ = m(*args)
         elif m in [Detect, IDetect, IAuxDetect, IBin, IKeypoint]:
             # Skip sanitize_args for detection heads
             if len(args) < 3:
