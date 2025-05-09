@@ -93,28 +93,25 @@ class SymmetricCrossAttention(nn.Module):
         manual_alphas = manual_alphas.clamp(1e-3, 1 - 1e-3)
 
         if mode == "learned":
-            self.time_proj = nn.Linear(time_dim, 2 * channels)
+            self.time_embeddings = nn.Parameter(torch.empty(3, 2 * channels))
             self.gate_proj = nn.Sequential(
                 nn.Conv2d(2 * channels, 1, kernel_size=1),
             )
 
             # === Guided bias initialization ===
             with torch.no_grad():
-                logit = lambda x: torch.log(x / (1 - x))
-                nn.init.constant_(self.time_proj.weight, 0.0)
+                logit = lambda x: torch.log(x / (1 - x))  # Sigmoid inverse
+                guided_logits = logit(manual_alphas)  # Shape: [3]
 
-                # Interpolate logit values to fill the 2C dimensions of the bias
-                bias_vector = torch.nn.functional.interpolate(
-                    logit(manual_alphas).view(1, 1, -1),  # shape [1, 1, 3]
-                    size=2 * channels,
-                    mode='linear',
-                    align_corners=True
-                ).view(-1)  # shape [2C]
+                # Interpolate each logit into a full-length vector independently
+                guided_logits_full = torch.stack([
+                    F.interpolate(g.view(1, 1, 1), size=2 * channels, mode='linear', align_corners=True).view(-1)
+                    for g in guided_logits
+                ])  # Shape: [3, 2 * channels]
 
-                self.time_proj.bias.copy_(bias_vector)
+                self.time_embeddings.copy_(guided_logits_full)
 
-                guided_bias = logit(manual_alphas).mean()  # average logit
-                self.gate_proj[0].bias.fill_(guided_bias.item())  # initialize to sigmoid(guided_bias) ≈ 0.5–0.7
+                self.gate_proj[0].bias.fill_(guided_logits_full.mean().item())
 
         elif mode == "manual":
             self.register_buffer("alpha_table", manual_alphas.float())
@@ -161,13 +158,7 @@ class SymmetricCrossAttention(nn.Module):
             alpha = self.alpha_table.to(dtype=z_rgb.dtype, device=z_rgb.device)[time_idx].view(-1, 1, 1, 1)
             fused = alpha * z_rgb_prime + (1 - alpha) * z_ir_prime
         else:
-            if time_idx.ndim == 1:
-                time_onehot = F.one_hot(time_idx, num_classes=3).float()
-            else:
-                time_onehot = time_idx.float()
-            
-            time_onehot = time_onehot.to(dtype=z_rgb.dtype)
-            t_proj = self.time_proj(time_onehot).unsqueeze(-1).unsqueeze(-1)
+            t_proj = self.time_embeddings[time_idx].unsqueeze(-1).unsqueeze(-1)
 
             z_fusion = torch.cat([z_rgb_prime, z_ir_prime], dim=1)
             gate_logits = self.gate_proj(z_fusion + t_proj.expand(-1, -1, H_ds, W_ds))
