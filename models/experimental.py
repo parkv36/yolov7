@@ -93,7 +93,7 @@ class SymmetricCrossAttention(nn.Module):
         manual_alphas = manual_alphas.clamp(1e-3, 1 - 1e-3)
 
         if mode == "learned":
-            self.time_embeddings = nn.Parameter(torch.empty(3, 2 * channels))
+            self.time_embeddings = nn.Parameter(torch.empty(time_dim, 2 * channels))
             self.gate_proj = nn.Sequential(
                 nn.Conv2d(2 * channels, 1, kernel_size=1),
             )
