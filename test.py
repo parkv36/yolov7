@@ -71,6 +71,7 @@ def test(data,
 
     # Configure
     model.eval()
+
     if isinstance(data, str):
         is_coco = data.endswith('coco.yaml')
         with open(data) as f:
@@ -79,6 +80,11 @@ def test(data,
 
     fusion_type = data.get('fusion_type', 'none')
     is_fusion = fusion_type in ['early', 'mid', 'late']
+
+    if is_fusion:
+        for m in model.modules():
+            if hasattr(m, "eval_mode_fast"):
+                m.eval_mode_fast = True
     
     nc = 1 if single_cls else int(data['nc'])  # number of classes
     iouv = torch.linspace(0.5, 0.95, 10).to(device)  # iou vector for mAP@0.5:0.95

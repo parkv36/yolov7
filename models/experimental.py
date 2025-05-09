@@ -9,6 +9,7 @@ from utils.plots import plot_one_box
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 import torch.nn.functional as F
+import wandb
 
 from models.common import Conv, DWConv
 from utils.google_utils import attempt_download
@@ -73,6 +74,7 @@ class SymmetricCrossAttention(nn.Module):
     def __init__(self, channels, time_dim=3, mode="manual", downsample=True, ds_factor=4):
         super().__init__()
         self.mode = mode
+        self.eval_mode_fast = False # ensures real-time eval without logging
         self.channels = channels
         self.downsample = downsample
         self.ds_factor = ds_factor
@@ -87,13 +89,35 @@ class SymmetricCrossAttention(nn.Module):
 
         self.softmax = nn.Softmax(dim=-1)
 
+        manual_alphas = torch.tensor([0.7, 0.5, 0.3])
+        manual_alphas = manual_alphas.clamp(1e-3, 1 - 1e-3)
+
         if mode == "learned":
             self.time_proj = nn.Linear(time_dim, 2 * channels)
             self.gate_proj = nn.Sequential(
                 nn.Conv2d(2 * channels, 1, kernel_size=1),
             )
+
+            # === Guided bias initialization ===
+            with torch.no_grad():
+                logit = lambda x: torch.log(x / (1 - x))
+                nn.init.constant_(self.time_proj.weight, 0.0)
+
+                # Interpolate logit values to fill the 2C dimensions of the bias
+                bias_vector = torch.nn.functional.interpolate(
+                    logit(manual_alphas).view(1, 1, -1),  # shape [1, 1, 3]
+                    size=2 * channels,
+                    mode='linear',
+                    align_corners=True
+                ).view(-1)  # shape [2C]
+
+                self.time_proj.bias.copy_(bias_vector)
+
+                guided_bias = logit(manual_alphas).mean()  # average logit
+                self.gate_proj[0].bias.fill_(guided_bias.item())  # initialize to sigmoid(guided_bias) ≈ 0.5–0.7
+
         elif mode == "manual":
-            self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))
+            self.register_buffer("alpha_table", manual_alphas.float())
         else:
             raise ValueError(f"Unsupported mode '{mode}'")
 
@@ -150,11 +174,16 @@ class SymmetricCrossAttention(nn.Module):
             gate = torch.sigmoid(gate_logits)
             fused = gate * z_rgb_prime + (1 - gate) * z_ir_prime
 
+            if self.training:
+                self.log_gates(gate, time_idx, split="train")
+            else:
+                self.log_gates(gate, time_idx, split="val")
+
         # === Optional Upsampling ===
         if self.downsample and (H_ds != H or W_ds != W):
             fused = F.interpolate(fused, size=(H, W), mode='bilinear', align_corners=False)
 
-        if not self.training and random.random() < 0.01:
+        if not self.training and random.random() < 0.01 and not self.eval_mode_fast:
             if targets is not None:
                 for i in range(z_rgb.shape[0]):
                     matching_targets = targets[targets[:, 0] == i]
@@ -165,13 +194,93 @@ class SymmetricCrossAttention(nn.Module):
 
         return fused.to(dtype=z_rgb.dtype, device=z_rgb.device)
     
+    def log_gates(self, gate, time_idx, split="train"):
+        """
+        Accumulates average gating weight per time-of-day for the full epoch.
+        Must call SymmetricCrossAttention.flush_logs() at the end of each epoch.
+        """
+        if not self.training and self.eval_mode_fast:
+            return
+
+        if not wandb.run:
+            return
+
+        gate_flat = gate.mean(dim=(2, 3)).squeeze(1)  # [B]
+        time_idx = time_idx.detach().cpu().tolist()
+        gate_vals = gate_flat.detach().cpu().tolist()
+
+        if not hasattr(self, '_log_buffer'):
+            self._log_buffer = {}
+
+        for t, g in zip(time_idx, gate_vals):
+            key = f"{split}/gate_avg_time_{t}"
+            if key in self._log_buffer:
+                self._log_buffer[key].append(g)
+            else:
+                self._log_buffer[key] = [g]
+
     @property
     def out_channels(self):
         return self.channels
 
-    def save_fused_tensor(self, x, targets=None):
-        # TODO: add in tensor saving logic
-        pass
+    def flush_logs(self):
+        """
+        Flushes the accumulated gate logs to wandb (once per epoch).
+        """
+        if hasattr(self, '_log_buffer') and wandb.run:
+            logs = {k: sum(v)/len(v) for k, v in self._log_buffer.items()}
+            wandb.log(logs)
+            self._log_buffer.clear()
+
+    @staticmethod
+    def save_fused_tensor(x_fused, idx=None):
+        """
+        Saves a feature map from cross-attended fusion as a visual artifact.
+        No bounding boxes are drawn, since these are not image inputs.
+
+        Args:
+            x_fused (Tensor or ndarray): shape (C, H, W)
+            idx (int): optional index for uniqueness
+        """
+        if isinstance(x_fused, torch.Tensor):
+            x_fused = x_fused.detach().cpu().numpy()
+        assert x_fused.ndim == 3, "Expected 3D tensor (C, H, W)"
+        C, H, W = x_fused.shape
+
+        os.makedirs('fused_samples', exist_ok=True)
+        if idx is None:
+            idx = random.randint(0, 999999)
+
+        choice = random.choice(["mean_heatmap", "pca_rgb", "channel_grid"])
+
+        if choice == "mean_heatmap":
+            fmap = x_fused.mean(axis=0)
+            fmap = (fmap - fmap.min()) / (fmap.max() - fmap.min() + 1e-8)
+            fmap = (fmap * 255).astype(np.uint8)
+            heatmap = cv2.applyColorMap(fmap, cv2.COLORMAP_JET)
+            cv2.imwrite(f"fused_samples/fused_heatmap_{idx}.jpg", heatmap)
+
+        elif choice == "pca_rgb":
+            flat = x_fused.reshape(C, -1).T  # shape (H*W, C)
+            pca = PCA(n_components=3)
+            rgb = pca.fit_transform(flat).reshape(H, W, 3)
+            rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min() + 1e-8)
+            rgb = (rgb * 255).astype(np.uint8)
+            cv2.imwrite(f"fused_samples/fused_pca_rgb_{idx}.jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+
+        elif choice == "channel_grid":
+            ncols = min(8, C)
+            nrows = (C + ncols - 1) // ncols
+            fig, axs = plt.subplots(nrows, ncols, figsize=(ncols * 2, nrows * 2))
+            for i in range(C):
+                ax = axs[i // ncols, i % ncols]
+                ax.imshow(x_fused[i], cmap='viridis')
+                ax.axis('off')
+            for j in range(C, nrows * ncols):
+                axs[j // ncols, j % ncols].axis('off')
+            plt.tight_layout()
+            plt.savefig(f"fused_samples/fused_grid_{idx}.png")
+            plt.close()
 
 class CrossConv(nn.Module):
     # Cross Convolution Downsample

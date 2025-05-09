@@ -414,6 +414,17 @@ def train(hyp, opt, device, tb_writer=None):
                                                   save_dir.glob('train*.jpg') if x.exists()]})
 
             # end batch ------------------------------------------------------------------------------------------------
+        
+        if rank in [-1, 0]:
+            def flush_logs_recursively(module):
+                for m in module.modules():
+                    if hasattr(m, 'flush_logs'):
+                        m.flush_logs()
+
+            if hasattr(model, 'module'):
+                flush_logs_recursively(model.module)
+            else:
+                flush_logs_recursively(model)
         # end epoch ----------------------------------------------------------------------------------------------------
 
         # Scheduler
