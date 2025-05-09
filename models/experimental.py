@@ -70,15 +70,17 @@ class DualLayer(nn.Module):
 
 #TODO: complete and test symmetriccrossattention block
 class SymmetricCrossAttention(nn.Module):
-    def __init__(self, channels, time_dim=3, mode="manual"):
+    def __init__(self, channels, time_dim=3, mode="manual", downsample=True, ds_factor=4):
         super().__init__()
         self.mode = mode
         self.channels = channels
-        
+        self.downsample = downsample
+        self.ds_factor = ds_factor
+
         self.query_rgb = nn.Conv2d(channels, channels, kernel_size=1)
         self.key_ir = nn.Conv2d(channels, channels, kernel_size=1)
         self.value_ir = nn.Conv2d(channels, channels, kernel_size=1)
-        
+
         self.query_ir = nn.Conv2d(channels, channels, kernel_size=1)
         self.key_rgb = nn.Conv2d(channels, channels, kernel_size=1)
         self.value_rgb = nn.Conv2d(channels, channels, kernel_size=1)
@@ -90,7 +92,6 @@ class SymmetricCrossAttention(nn.Module):
             self.gate_proj = nn.Sequential(
                 nn.Conv2d(2 * channels, 1, kernel_size=1),
             )
-            # Can potentially add gate complexity if we want to learn a more complex gate projection
         elif mode == "manual":
             self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))
         else:
@@ -104,14 +105,23 @@ class SymmetricCrossAttention(nn.Module):
 
         B, C, H, W = z_rgb.shape
 
-        # === 1. Cross Attention ===
-        q_rgb = self.query_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
-        k_ir = self.key_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
-        v_ir = self.value_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
+        # === Optional Spatial Downsampling ===
+        if self.downsample:
+            z_rgb_ds = F.interpolate(z_rgb, scale_factor=1/self.ds_factor, mode='bilinear', align_corners=False)
+            z_ir_ds = F.interpolate(z_ir, scale_factor=1/self.ds_factor, mode='bilinear', align_corners=False)
+            H_ds, W_ds = z_rgb_ds.shape[2:]
+        else:
+            z_rgb_ds, z_ir_ds = z_rgb, z_ir
+            H_ds, W_ds = H, W
 
-        q_ir = self.query_ir(z_ir).view(B, C, -1).permute(0, 2, 1)
-        k_rgb = self.key_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
-        v_rgb = self.value_rgb(z_rgb).view(B, C, -1).permute(0, 2, 1)
+        # === 1. Cross Attention ===
+        q_rgb = self.query_rgb(z_rgb_ds).view(B, C, -1).permute(0, 2, 1)
+        k_ir = self.key_ir(z_ir_ds).view(B, C, -1).permute(0, 2, 1)
+        v_ir = self.value_ir(z_ir_ds).view(B, C, -1).permute(0, 2, 1)
+
+        q_ir = self.query_ir(z_ir_ds).view(B, C, -1).permute(0, 2, 1)
+        k_rgb = self.key_rgb(z_rgb_ds).view(B, C, -1).permute(0, 2, 1)
+        v_rgb = self.value_rgb(z_rgb_ds).view(B, C, -1).permute(0, 2, 1)
 
         attn_rgb_to_ir = self.softmax(q_rgb @ k_ir.transpose(-2, -1) / (C ** 0.5))
         attn_ir_to_rgb = self.softmax(q_ir @ k_rgb.transpose(-2, -1) / (C ** 0.5))
@@ -119,24 +129,28 @@ class SymmetricCrossAttention(nn.Module):
         z_rgb_prime = attn_rgb_to_ir @ v_ir
         z_ir_prime = attn_ir_to_rgb @ v_rgb
 
-        z_rgb_prime = z_rgb_prime.permute(0, 2, 1).view(B, C, H, W)
-        z_ir_prime = z_ir_prime.permute(0, 2, 1).view(B, C, H, W)
+        z_rgb_prime = z_rgb_prime.permute(0, 2, 1).view(B, C, H_ds, W_ds)
+        z_ir_prime = z_ir_prime.permute(0, 2, 1).view(B, C, H_ds, W_ds)
 
         # === 2. Fusion ===
         if self.mode == "manual":
             alpha = self.alpha_table.to(dtype=z_rgb.dtype, device=z_rgb.device)[time_idx].view(-1, 1, 1, 1)
             fused = alpha * z_rgb_prime + (1 - alpha) * z_ir_prime
-        else:  # learned gating
+        else:
             if time_idx.ndim == 1:
-                time_onehot = F.one_hot(time_idx, num_classes=3).float()  # [B, 3]
+                time_onehot = F.one_hot(time_idx, num_classes=3).float()
             else:
                 time_onehot = time_idx.float()
-            t_proj = self.time_proj(time_onehot).unsqueeze(-1).unsqueeze(-1)  # [B, C, 1, 1]
+            t_proj = self.time_proj(time_onehot).unsqueeze(-1).unsqueeze(-1)
 
-            z_fusion = torch.cat([z_rgb_prime, z_ir_prime], dim=1)  # [B, 2C, H, W]
-            gate_logits = self.gate_proj(z_fusion + t_proj.expand(-1, -1, H, W))  # [B, 1, H, W]
+            z_fusion = torch.cat([z_rgb_prime, z_ir_prime], dim=1)
+            gate_logits = self.gate_proj(z_fusion + t_proj.expand(-1, -1, H_ds, W_ds))
             gate = torch.sigmoid(gate_logits)
             fused = gate * z_rgb_prime + (1 - gate) * z_ir_prime
+
+        # === Optional Upsampling ===
+        if self.downsample and (H_ds != H or W_ds != W):
+            fused = F.interpolate(fused, size=(H, W), mode='bilinear', align_corners=False)
 
         if not self.training and random.random() < 0.01:
             if targets is not None:
