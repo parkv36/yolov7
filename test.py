@@ -147,7 +147,7 @@ def test(data,
                 if is_fusion:
                     if fusion_type in ['early', 'mid', 'late']:
                         (rgb_img, ir_img, time_idx) = img
-                        out, train_out = model(rgb_img,ir_img, time_idx, targets=targets)  # inference and training outputs
+                        out, train_out = model(rgb_img, ir_img, time_idx, targets=targets)  # inference and training outputs
                     else:
                         raise ValueError(f"Unknown fusion type: {fusion_type}")
                 else:

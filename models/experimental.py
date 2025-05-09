@@ -141,6 +141,8 @@ class SymmetricCrossAttention(nn.Module):
                 time_onehot = F.one_hot(time_idx, num_classes=3).float()
             else:
                 time_onehot = time_idx.float()
+            
+            time_onehot = time_onehot.to(dtype=z_rgb.dtype)
             t_proj = self.time_proj(time_onehot).unsqueeze(-1).unsqueeze(-1)
 
             z_fusion = torch.cat([z_rgb_prime, z_ir_prime], dim=1)
@@ -429,10 +431,7 @@ class FusionLayer(nn.Module):
         # elif self.mode == "manual":
         #     alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
 
-        if targets is not None:
-            (rgb, lwir, time_idx) = x[0]
-        else:
-            (rgb, lwir, time_idx) = x
+        (rgb, lwir, time_idx) = x
 
         alpha = self.alpha_table.to(dtype=rgb.dtype, device=rgb.device)[time_idx].view(-1, 1, 1, 1)
 
