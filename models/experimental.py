@@ -629,6 +629,33 @@ class FusionLayer(nn.Module):
                 plt.savefig(f"fused_samples/fused_grid_{idx}.png")
                 plt.close()
 
+class GMUFusionLayer(nn.Module):
+    def __init__(self, in_channels=3, hidden_dim=64, mode="learned"):
+        super().__init__()
+        self.mode = mode
+
+        # Shared feature projection layers for RGB and LWIR
+        self.W_rgb = nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1)
+        self.W_ir = nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1)
+
+        # Gating layer on concatenated raw features
+        self.W_z = nn.Conv2d(in_channels * 2, hidden_dim, kernel_size=3, padding=1)
+
+    def forward(self, x, targets=None):
+        rgb, lwir, _ = x  # (B, C, H, W)
+
+        # Project into shared feature space
+        h_rgb = torch.tanh(self.W_rgb(rgb))    # h_v
+        h_ir  = torch.tanh(self.W_ir(lwir))    # h_t
+
+        # Concatenate raw inputs for gate computation
+        z_input = torch.cat([rgb, lwir], dim=1)  # along channel axis
+        z = torch.sigmoid(self.W_z(z_input))     # shape (B, D, H, W)
+
+        # Final gated output
+        h = z * h_rgb + (1 - z) * h_ir
+
+        return h
 
 def attempt_load(weights, map_location=None):
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a

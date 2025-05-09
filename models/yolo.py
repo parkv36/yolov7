@@ -957,6 +957,18 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             rgb_layer = rgb_class(*rgb_args)
             lwir_layer = lwir_class(*lwir_args)
             m_ = DualLayer(rgb_layer, lwir_layer)
+        elif m is GMUFusionLayer:
+            # Default input channels are assumed to be 3 for both rgb and ir
+            if i == 0:
+                ch_in = 3
+            # Assume args = [in_channels, hidden_dim, mode]
+            # Provide default args if not specified
+            if len(args) == 0:
+                args = [3, 64, "learned"]
+            elif len(args) == 2:
+                args.append("learned")
+            m_ = GMUFusionLayer(*args)
+            c2 = args[1]  # hidden_dim becomes output channels of fusion
         elif m in [Detect, IDetect, IAuxDetect, IBin, IKeypoint]:
             # Skip sanitize_args for detection heads
             if len(args) < 3:
