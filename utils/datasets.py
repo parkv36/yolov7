@@ -11,6 +11,7 @@ from itertools import repeat
 from multiprocessing.pool import ThreadPool
 from pathlib import Path
 from threading import Thread
+import re
 
 import cv2
 import numpy as np
@@ -69,14 +70,22 @@ def find_lwir_path(rgb_path):
     else:
         raise ValueError(f"Expected 'rgb' in path: {rgb_path}")
     
-    # Insert 'IR_' after leading alphabetic characters
+    # Try original name
+    lwir_path = os.path.join(lwir_dir, basename)
+    if os.path.exists(lwir_path):
+        return lwir_path
+
+    # Try with IR_ prefix
     i = 0
     while i < len(basename) and basename[i].isalpha():
         i += 1
     lwir_basename = basename[:i] + 'IR_' + basename[i:]
-    
-    lwir_path = os.path.join(lwir_dir, lwir_basename)
-    return lwir_path
+    lwir_path_alt = os.path.join(lwir_dir, lwir_basename)
+    if os.path.exists(lwir_path_alt):
+        return lwir_path_alt
+
+    raise FileNotFoundError(f"No IR image found for {rgb_path}: tried {lwir_path} and {lwir_path_alt}")
+
 
 
 
@@ -376,14 +385,35 @@ def img2label_paths(img_paths):
 
 def extract_time_of_day(filepath):
     filepath = filepath.lower()
+    # Match subfolders like "1.1", "1.2", etc.
+
+    match = re.search(r'/(\d\.\d)/', filepath)
+    if match:
+        time_code = match.group(1)
+        time_map = {
+            "1.1": 2,  # pre_sunrise
+            "1.2": 1,  # post_sunrise
+            "1.3": 0,  # noon
+            "1.4": 1,  # pre_sunset
+            "1.5": 2,   # post_sunset
+            "2.1": 2,  # pre_sunrise
+            "2.2": 1,  # post_sunrise
+            "2.3": 0,  # noon
+            "2.4": 1,  # pre_sunset
+            "2.5": 2   # post_sunset
+        }
+        if time_code in time_map:
+            return time_map[time_code]
+
+    # fallback to original string search
     if "noon" in filepath:
         return 0
     elif "post_sunrise" in filepath or "pre_sunset" in filepath:
         return 1
     elif "pre_sunrise" in filepath or "post_sunset" in filepath:
         return 2
-    raise ValueError(f"Unknown time-of-day in path: {filepath}")
 
+    raise ValueError(f"Unknown time-of-day in path: {filepath}")
 
 class LoadImagesAndLabels(Dataset):  # for training/testing
     def __init__(self, path, img_size=640, batch_size=16, augment=False, hyp=None, rect=False, image_weights=False,

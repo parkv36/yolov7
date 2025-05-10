@@ -97,8 +97,15 @@ def test(data,
     # Dataloader
     if not training:
         if device.type != 'cpu':
-            if fusion_type not in ['mid', "late"]:
-                model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+            dummy_rgb = torch.zeros(1, 3, imgsz, imgsz).to(device)
+            dummy_ir = torch.zeros(1, 3, imgsz, imgsz).to(device)
+            dummy_time = torch.zeros(1, dtype=torch.long).to(device)
+
+            # Match model's precision
+            dummy_rgb = dummy_rgb.type_as(next(model.parameters()))
+            dummy_ir = dummy_ir.type_as(next(model.parameters()))
+
+            model((dummy_rgb, dummy_ir, dummy_time))
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
                                        prefix=colorstr(f'{task}: '), fusion_type=fusion_type)[0]
@@ -153,7 +160,7 @@ def test(data,
                 if is_fusion:
                     if fusion_type in ['early', 'mid', 'late']:
                         (rgb_img, ir_img, time_idx) = img
-                        out, train_out = model(rgb_img, ir_img, time_idx, targets=targets)  # inference and training outputs
+                        out, train_out = model((rgb_img, ir_img, time_idx), targets=targets)  # inference and training outputs
                     else:
                         raise ValueError(f"Unknown fusion type: {fusion_type}")
                 else:
