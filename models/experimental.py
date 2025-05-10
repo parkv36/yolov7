@@ -632,28 +632,28 @@ class FusionLayer(nn.Module):
         super().__init__()
         self.mode = mode
         if mode == "learned":
-            # self.time_embedding = nn.Embedding(3, 8)  # 3 time categories
-            # self.predictor = nn.Sequential(
-            #     nn.Linear(8, 16),
-            #     nn.ReLU(),
-            #     nn.Linear(16, 1),
-            #     nn.Sigmoid()
-            # )
-            self.alpha_table = nn.Parameter(torch.tensor([0.7, 0.5, 0.3],dtype=torch.float32))
+            self.time_embedding = nn.Embedding(3, 8)  # 3 time categories
+            self.predictor = nn.Sequential(
+                nn.Linear(8, 16),
+                nn.ReLU(),
+                nn.Linear(16, 1),
+                nn.Sigmoid()
+            )
+            # self.alpha_table = nn.Parameter(torch.tensor([0.7, 0.5, 0.3],dtype=torch.float32))
         elif mode == "manual":
             #TODO: toggle these ratios and see what works best
             self.register_buffer("alpha_table", torch.tensor([0.7, 0.5, 0.3], dtype=torch.float32))  # noon, post_sunrise_or_pre_sunset, pre_sunrise_or_post_sunset
    
     def forward(self, x, targets=None):
-        # if self.mode == "learned":
-        #     time_embed = self.time_embedding(time_idx)
-        #     alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
-        # elif self.mode == "manual":
-        #     alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
-
         (rgb, lwir, time_idx) = x
 
-        alpha = self.alpha_table.to(dtype=rgb.dtype, device=rgb.device)[time_idx].view(-1, 1, 1, 1)
+        if self.mode == "learned":
+            time_embed = self.time_embedding(time_idx)
+            alpha = self.predictor(time_embed).view(-1, 1, 1, 1)
+        elif self.mode == "manual":
+            alpha = self.alpha_table[time_idx].view(-1, 1, 1, 1).to(rgb.device)
+
+        # alpha = self.alpha_table.to(dtype=rgb.dtype, device=rgb.device)[time_idx].view(-1, 1, 1, 1)
 
         #TODO: decide if i want to be saving images or not, change threshold
         # if self.training:  # Only save during training

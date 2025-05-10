@@ -1,3 +1,5 @@
+# comment out subdirectories for ablation as necessary
+
 val:
   [
     "../test/test_ablation/15m (50ft)/rgb/",
