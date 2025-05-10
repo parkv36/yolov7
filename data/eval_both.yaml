@@ -1,0 +1,5 @@
+val: ../test/
+
+nc: 3
+
+names: ["car", "truck", "person"]
