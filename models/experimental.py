@@ -642,7 +642,7 @@ class GMUFusionLayer(nn.Module):
         self.W_z = nn.Conv2d(in_channels * 2, hidden_dim, kernel_size=3, padding=1)
 
     def forward(self, x, targets=None):
-        rgb, lwir, _ = x  # (B, C, H, W)
+        rgb, lwir, time_idx = x  # (B, C, H, W)
 
         # Project into shared feature space
         h_rgb = torch.tanh(self.W_rgb(rgb))    # h_v
@@ -650,7 +650,15 @@ class GMUFusionLayer(nn.Module):
 
         # Concatenate raw inputs for gate computation
         z_input = torch.cat([rgb, lwir], dim=1)  # along channel axis
-        z = torch.sigmoid(self.W_z(z_input))     # shape (B, D, H, W)
+        z_base = torch.sigmoid(self.W_z(z_input))
+        
+        if self.mode == "learned":
+            # (B, hidden_dim) -> (B, hidden_dim, 1, 1) -> broadcast to (B, D, H, W)
+            t_embed = self.time_embeddings(time_idx).unsqueeze(-1).unsqueeze(-1)
+            t_embed = t_embed.expand_as(z_base)
+            z = torch.sigmoid(z_base + t_embed)  # Time-guided gating
+        else:
+            z = z_base  # Default gate if no ToD logic
 
         # Final gated output
         h = z * h_rgb + (1 - z) * h_ir
