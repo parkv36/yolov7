@@ -958,17 +958,37 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             lwir_layer = lwir_class(*lwir_args)
             m_ = DualLayer(rgb_layer, lwir_layer)
         elif m is GMUFusionLayer:
-            # Default input channels are assumed to be 3 for both rgb and ir
             if i == 0:
                 ch_in = 3
-            # Assume args = [in_channels, hidden_dim, mode]
             # Provide default args if not specified
             if len(args) == 0:
-                args = [3, 64, "learned"]
+                args = [3, 64, 3, "learned", None]
             elif len(args) == 2:
-                args.append("learned")
+                args += [3, "learned", None]
+            elif len(args) == 3:
+                args += [3, None]
+            elif len(args) == 4:
+                args.append(None)
             m_ = GMUFusionLayer(*args)
-            c2 = args[1]  # hidden_dim becomes output channels of fusion
+            c2 = args[1]  # hidden_dim
+        elif m is SymmetricCrossAttentionGMU:
+            # First layer in model (use input channels = 3)
+            if i == 0:
+                ch_in = 3
+            # Fill in default args if missing: (channels, time_dim, mode, downsample, ds_factor)
+            if len(args) == 0:
+                args = [ch_in, 3, "learned", True, 4]
+            elif len(args) == 1:
+                args += [3, "learned", True, 4]
+            elif len(args) == 2:
+                args += ["learned", True, 4]
+            elif len(args) == 3:
+                args += [True, 4]
+            elif len(args) == 4:
+                args.append(4)
+
+            m_ = SymmetricCrossAttentionGMU(*args)
+            c2 = args[0]  # channels (same in and out)
         elif m in [Detect, IDetect, IAuxDetect, IBin, IKeypoint]:
             # Skip sanitize_args for detection heads
             if len(args) < 3:

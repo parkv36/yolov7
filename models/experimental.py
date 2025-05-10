@@ -273,6 +273,126 @@ class SymmetricCrossAttention(nn.Module):
             plt.savefig(f"fused_samples/fused_grid_{idx}.png")
             plt.close()
 
+class SymmetricCrossAttentionGMU(nn.Module):
+    def __init__(self, channels, time_dim=3, mode="learned", downsample=True, ds_factor=4):
+        super().__init__()
+        self.mode = mode
+        self.channels = channels
+        self.downsample = downsample
+        self.ds_factor = ds_factor
+        self.eval_mode_fast = False
+
+        # === Cross-attention queries, keys, values ===
+        self.query_rgb = nn.Conv2d(channels, channels, kernel_size=1)
+        self.key_ir   = nn.Conv2d(channels, channels, kernel_size=1)
+        self.value_ir = nn.Conv2d(channels, channels, kernel_size=1)
+
+        self.query_ir = nn.Conv2d(channels, channels, kernel_size=1)
+        self.key_rgb  = nn.Conv2d(channels, channels, kernel_size=1)
+        self.value_rgb= nn.Conv2d(channels, channels, kernel_size=1)
+
+        # === GMU-style feature projections ===
+        self.W_rgb_proj = nn.Conv2d(channels, channels, kernel_size=1)
+        self.W_ir_proj  = nn.Conv2d(channels, channels, kernel_size=1)
+        self.W_z_gate   = nn.Conv2d(2 * channels, channels, kernel_size=1)
+
+        # === Time bias (learned or manual) ===
+        manual_alphas = torch.tensor([0.7, 0.5, 0.3]).clamp(1e-3, 1 - 1e-3)
+
+        if mode == "learned":
+            self.time_embeddings = nn.Parameter(torch.empty(time_dim, channels))
+            self._init_time_embeddings(manual_alphas)
+        elif mode == "manual":
+            self.register_buffer("alpha_table", manual_alphas.float())
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        self.softmax = nn.Softmax(dim=-1)
+
+    def _init_time_embeddings(self, alphas):
+        with torch.no_grad():
+            logit = lambda x: torch.log(x / (1 - x))
+            guided_logits = logit(alphas)
+            guided_full = torch.stack([
+                F.interpolate(g.view(1, 1, 1), size=self.channels, mode='linear', align_corners=True).view(-1)
+                for g in guided_logits
+            ])
+            self.time_embeddings.copy_(guided_full)
+
+    def forward(self, x, targets=None):
+        z_rgb, z_ir, time_idx = x[0] if targets is not None else x
+        B, C, H, W = z_rgb.shape
+
+        # === Downsample if needed ===
+        if self.downsample:
+            z_rgb_ds = F.interpolate(z_rgb, scale_factor=1/self.ds_factor, mode='bilinear', align_corners=False)
+            z_ir_ds  = F.interpolate(z_ir, scale_factor=1/self.ds_factor, mode='bilinear', align_corners=False)
+            H_ds, W_ds = z_rgb_ds.shape[2:]
+        else:
+            z_rgb_ds, z_ir_ds = z_rgb, z_ir
+            H_ds, W_ds = H, W
+
+        # === Cross Attention ===
+        q_rgb = self.query_rgb(z_rgb_ds).flatten(2).permute(0, 2, 1)
+        k_ir  = self.key_ir(z_ir_ds).flatten(2).permute(0, 2, 1)
+        v_ir  = self.value_ir(z_ir_ds).flatten(2).permute(0, 2, 1)
+
+        q_ir  = self.query_ir(z_ir_ds).flatten(2).permute(0, 2, 1)
+        k_rgb = self.key_rgb(z_rgb_ds).flatten(2).permute(0, 2, 1)
+        v_rgb = self.value_rgb(z_rgb_ds).flatten(2).permute(0, 2, 1)
+
+        attn_rgb = self.softmax(q_rgb @ k_ir.transpose(-2, -1) / (C ** 0.5))
+        attn_ir  = self.softmax(q_ir @ k_rgb.transpose(-2, -1) / (C ** 0.5))
+
+        z_rgb_prime = (attn_rgb @ v_ir).permute(0, 2, 1).view(B, C, H_ds, W_ds)
+        z_ir_prime  = (attn_ir @ v_rgb).permute(0, 2, 1).view(B, C, H_ds, W_ds)
+
+        # === GMU-style Fusion ===
+        h_rgb = torch.tanh(self.W_rgb_proj(z_rgb_prime))
+        h_ir  = torch.tanh(self.W_ir_proj(z_ir_prime))
+
+        z_input = torch.cat([z_rgb_prime, z_ir_prime], dim=1)
+        z_base = torch.sigmoid(self.W_z_gate(z_input))
+
+        if self.mode == "learned":
+            t_embed = self.time_embeddings[time_idx].unsqueeze(-1).unsqueeze(-1)
+            t_embed = t_embed.expand_as(z_base)
+            z = torch.sigmoid(z_base + t_embed)
+        else:
+            alpha = self.alpha_table.to(dtype=z_base.dtype, device=z_base.device)[time_idx].view(-1, 1, 1, 1)
+            z = alpha.expand_as(z_base)
+
+        fused = z * h_rgb + (1 - z) * h_ir
+
+        # === Optional Upsample ===
+        if self.downsample and (H != H_ds or W != W_ds):
+            fused = F.interpolate(fused, size=(H, W), mode='bilinear', align_corners=False)
+
+        # === Optional Logging ===
+        if not self.training and random.random() < 0.01 and not self.eval_mode_fast:
+            for i in range(B):
+                self.save_fused_tensor(fused[i])
+
+        return fused
+
+    @property
+    def out_channels(self):
+        return self.channels
+
+    def save_fused_tensor(self, x_fused, idx=None):
+        if isinstance(x_fused, torch.Tensor):
+            x_fused = x_fused.detach().cpu().numpy()
+        C, H, W = x_fused.shape
+        os.makedirs('fused_samples', exist_ok=True)
+        if idx is None:
+            idx = random.randint(0, 999999)
+
+        fmap = x_fused.mean(axis=0)
+        fmap = (fmap - fmap.min()) / (fmap.max() - fmap.min() + 1e-8)
+        fmap = (fmap * 255).astype(np.uint8)
+        heatmap = cv2.applyColorMap(fmap, cv2.COLORMAP_JET)
+        cv2.imwrite(f"fused_samples/fused_gmu_heatmap_{idx}.jpg", heatmap)
+
 class CrossConv(nn.Module):
     # Cross Convolution Downsample
     def __init__(self, c1, c2, k=3, s=1, g=1, e=1.0, shortcut=False):
@@ -630,40 +750,52 @@ class FusionLayer(nn.Module):
                 plt.close()
 
 class GMUFusionLayer(nn.Module):
-    def __init__(self, in_channels=3, hidden_dim=64, mode="learned"):
+    def __init__(self, in_channels=3, hidden_dim=64, time_dim=3, mode="learned", init_alphas=None):
         super().__init__()
         self.mode = mode
+        self.hidden_dim = hidden_dim
+        self.time_dim = time_dim
 
-        # Shared feature projection layers for RGB and LWIR
+        # Shared feature projection layers
         self.W_rgb = nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1)
         self.W_ir = nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1)
 
-        # Gating layer on concatenated raw features
+        # Gating layer from concatenated inputs
         self.W_z = nn.Conv2d(in_channels * 2, hidden_dim, kernel_size=3, padding=1)
 
+        if mode == "learned":
+            self.time_embeddings = nn.Parameter(torch.empty(time_dim, hidden_dim))
+            default_alphas = [0.3, 0.5, 0.7]  # [night, noon, sunny]
+            self.reset_parameters(init_alphas or default_alphas)
+
+    def reset_parameters(self, alphas):
+        assert len(alphas) == self.time_dim
+        with torch.no_grad():
+            logit = lambda x: torch.log(x / (1 - x))  # inverse sigmoid
+            guided_logits = logit(torch.tensor(alphas, dtype=torch.float32))
+            guided_logits_full = torch.stack([
+                F.interpolate(g.view(1, 1, 1), size=self.hidden_dim, mode='linear', align_corners=True).view(-1)
+                for g in guided_logits
+            ])
+            self.time_embeddings.copy_(guided_logits_full)
+
     def forward(self, x, targets=None):
-        rgb, lwir, time_idx = x  # (B, C, H, W)
+        rgb, lwir, time_idx = x  # (B, C, H, W), (B, C, H, W), (B,)
 
-        # Project into shared feature space
-        h_rgb = torch.tanh(self.W_rgb(rgb))    # h_v
-        h_ir  = torch.tanh(self.W_ir(lwir))    # h_t
+        h_rgb = torch.tanh(self.W_rgb(rgb))     # (B, D, H, W)
+        h_ir  = torch.tanh(self.W_ir(lwir))     # (B, D, H, W)
 
-        # Concatenate raw inputs for gate computation
-        z_input = torch.cat([rgb, lwir], dim=1)  # along channel axis
-        z_base = torch.sigmoid(self.W_z(z_input))
-        
+        z_input = torch.cat([rgb, lwir], dim=1)  # (B, 2C, H, W)
+        z_base = torch.sigmoid(self.W_z(z_input))  # (B, D, H, W)
+
         if self.mode == "learned":
-            # (B, hidden_dim) -> (B, hidden_dim, 1, 1) -> broadcast to (B, D, H, W)
-            t_embed = self.time_embeddings(time_idx).unsqueeze(-1).unsqueeze(-1)
-            t_embed = t_embed.expand_as(z_base)
-            z = torch.sigmoid(z_base + t_embed)  # Time-guided gating
+            t_embed = self.time_embeddings[time_idx]  # (B, D)
+            t_embed = t_embed.unsqueeze(-1).unsqueeze(-1).expand_as(z_base)
+            z = torch.sigmoid(z_base + t_embed)
         else:
-            z = z_base  # Default gate if no ToD logic
+            z = z_base
 
-        # Final gated output
-        h = z * h_rgb + (1 - z) * h_ir
-
-        return h
+        return z * h_rgb + (1 - z) * h_ir
 
 def attempt_load(weights, map_location=None):
     # Loads an ensemble of models weights=[a,b,c] or a single model weights=[a] or weights=a
