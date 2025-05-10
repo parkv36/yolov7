@@ -750,7 +750,7 @@ class FusionLayer(nn.Module):
                 plt.close()
 
 class GMUFusionLayer(nn.Module):
-    def __init__(self, in_channels=3, hidden_dim=64, time_dim=3, mode="learned", init_alphas=None):
+    def __init__(self, in_channels=3, hidden_dim=64, time_dim=3, mode="manual", init_alphas=None):
         super().__init__()
         self.mode = mode
         self.hidden_dim = hidden_dim
