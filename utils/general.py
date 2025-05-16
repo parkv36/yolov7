@@ -832,6 +832,38 @@ def weighted_average_boxes(boxes1, boxes2, weight_rgb=0.5, weight_ir=0.5, iou_th
 
     return combined
 
+def weighted_nms_with_time(out_vis, out_ir, time_idx, iou_thres=0.5):
+    if out_vis is None or len(out_vis) == 0:
+        return out_ir
+    if out_ir is None or len(out_ir) == 0:
+        return out_vis
+
+    # Determine weights based on time of day
+    if time_idx == 0:
+        w_rgb, w_ir = 0.8, 0.2
+    elif time_idx == 1:
+        w_rgb, w_ir = 0.5, 0.5
+    elif time_idx == 2:
+        w_rgb, w_ir = 0.2, 0.8
+    else:
+        w_rgb, w_ir = 0.5, 0.5
+
+    # Add modality tags
+    out_vis_mod = out_vis.clone()
+    out_ir_mod = out_ir.clone()
+    out_vis_mod[:, 4] *= w_rgb  # adjust conf
+    out_ir_mod[:, 4] *= w_ir
+
+    combined = torch.cat([out_vis_mod, out_ir_mod], dim=0)
+
+    # Perform NMS on the combined adjusted boxes
+    boxes = combined[:, :4]
+    scores = combined[:, 4]
+
+    keep = torchvision.ops.nms(boxes, scores, iou_thres)
+
+    return combined[keep]
+
 def strip_optimizer(f='best.pt', s=''):  # from utils.general import *; strip_optimizer()
     # Strip optimizer from 'f' to finalize training, optionally save as 's'
     x = torch.load(f, map_location=torch.device('cpu'), weights_only=False)

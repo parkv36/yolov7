@@ -12,7 +12,8 @@ from tqdm import tqdm
 from models.experimental import attempt_load
 from utils.datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
-    box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr, weighted_average_boxes
+    box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr, weighted_average_boxes, \
+    weighted_nms_with_time
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
@@ -222,10 +223,20 @@ def test(data,
                 if late_fusion_type == 'NMS':
                     out = torch.cat((out, out_ir), dim=1) if out is not None else out_ir
                     out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
-                # elif late_fusion_type == 'NMS+Weight':
+                elif late_fusion_type == 'NMS+Weight':
                 # TODO: implement modified NMS that takes in time idxs and operates on final boxes rather than raw boxes
-                #     out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
-                #     out_ir = non_max_suppression(out_ir, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                    out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                    out_ir = non_max_suppression(out_ir, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+
+                    out_combined = []
+                    if time_idx is None:
+                        raise ValueError("time_idx is None, but late fusion type is NMS+Weight")
+                    
+                    for det_vis, det_ir, ti in zip(out, out_ir, time_idx):
+                        fused = weighted_nms_with_time(det_vis, det_ir, ti.item() if isinstance(ti, torch.Tensor) else ti, iou_thres=iou_thres)
+                        out_combined.append(fused)
+
+                    out = out_combined
                 elif late_fusion_type == 'AVG':
                     out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
                     out_ir = non_max_suppression(out_ir, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
