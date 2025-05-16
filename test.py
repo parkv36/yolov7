@@ -12,7 +12,7 @@ from tqdm import tqdm
 from models.experimental import attempt_load
 from utils.datasets import create_dataloader
 from utils.general import coco80_to_coco91_class, check_dataset, check_file, check_img_size, check_requirements, \
-    box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr
+    box_iou, non_max_suppression, scale_coords, xyxy2xywh, xywh2xyxy, set_logging, increment_path, colorstr, weighted_average_boxes
 from utils.metrics import ap_per_class, ConfusionMatrix
 from utils.plots import plot_images, output_to_target, plot_study_txt
 from utils.torch_utils import select_device, time_synchronized, TracedModel
@@ -43,6 +43,7 @@ def test(data,
          v5_metric=False,
          enable_label_remap=False,
          ir_weights=None,
+         late_fusion_type='NMS',
          ):
     # Initialize/load model and set device
     training = model is not None
@@ -60,8 +61,8 @@ def test(data,
         # Load model
         model = attempt_load(weights, map_location=device)  # load FP32 model
         model_ir = None
-        if opt.ir_weights:
-            model_ir = attempt_load(opt.ir_weights, map_location=device)
+        if ir_weights:
+            model_ir = attempt_load(ir_weights, map_location=device)
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
         imgsz = check_img_size(imgsz, s=gs)  # check img_size
         
@@ -186,6 +187,8 @@ def test(data,
 
 
         with torch.no_grad():
+            out_ir = None
+            time_idx = None
             # Run model
             t = time_synchronized()
 
@@ -196,11 +199,8 @@ def test(data,
                         out, train_out = model((rgb_img, ir_img, time_idx), targets=targets)  # inference and training outputs
                     elif fusion_type == 'late':
                         (rgb_img, ir_img, time_idx) = img
-                        out, train_out = model(rgb_img, augment=augment)  # inference and training outputs
-                        out_ir, _ = model_ir(ir_img, augment=augment)  # inference and training outputs
-
-                        #TODO: add more complex functionality with non-nms approaches
-                        out = torch.cat((out, out_ir), dim=1) if out is not None and out_ir is not None else out or out_ir
+                        out, _ = model(rgb_img, augment=augment)  # RGB inference outputs (late fusion never needs training metrics)
+                        out_ir, _ = model_ir(ir_img, augment=augment)  # IR inference outputs (late fusion never needs training metrics)
                     else:
                         raise ValueError(f"Unknown fusion type: {fusion_type}")
                 else:
@@ -218,18 +218,51 @@ def test(data,
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
-            out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
-            # if out2 is not None:
-            #     out2 = non_max_suppression(out2, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
-            #     fused_outputs = []
-            #     for rgb_preds, ir_preds in zip(out, out2):
-            #         combined = torch.cat([rgb_preds, ir_preds], dim=0) if rgb_preds is not None and ir_preds is not None else rgb_preds or ir_preds
-            #         final_preds = non_max_suppression(combined.unsqueeze(0), conf_thres, iou_thres, multi_label=True)[0]
-            #         fused_outputs.append(final_preds)
-            #     out = fused_outputs
-            #     print(f"RGB preds: {[len(x) if x is not None else 0 for x in out]}")
-            #     print(f"IR preds: {[len(x) if x is not None else 0 for x in out2]}")
-            #     print(f"Fused preds: {[len(x) if x is not None else 0 for x in fused_outputs]}")
+            if out_ir is not None:
+                if late_fusion_type == 'NMS':
+                    out = torch.cat((out, out_ir), dim=1) if out is not None else out_ir
+                    out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                # elif late_fusion_type == 'NMS+Weight':
+                # TODO: implement modified NMS that takes in time idxs and operates on final boxes rather than raw boxes
+                #     out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                #     out_ir = non_max_suppression(out_ir, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                elif late_fusion_type == 'AVG':
+                    out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                    out_ir = non_max_suppression(out_ir, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                    out_combined = []
+                    for det_vis, det_ir in zip(out, out_ir):
+                        fused = weighted_average_boxes(det_vis, det_ir, iou_threshold=iou_thres)
+                        out_combined.append(fused)
+                    
+                    out = out_combined
+                elif late_fusion_type == 'AVG+Weight':
+                    out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                    out_ir = non_max_suppression(out_ir, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+                    out_combined = []
+                    if time_idx is None:
+                        raise ValueError("time_idx is None, but late fusion type is AVG+Weight")
+                    for det_vis, det_ir, ti in zip(out, out_ir, time_idx):
+                        # Example fixed weights
+                        if ti == 0:  # noon
+                            w_rgb, w_ir = 0.8, 0.2
+                        elif ti == 1:  # twilight
+                            w_rgb, w_ir = 0.5, 0.5
+                        elif ti == 2:  # night
+                            w_rgb, w_ir = 0.2, 0.8
+                        else:
+                            w_rgb, w_ir = 0.5, 0.5  # fallback
+                        
+                        fused = weighted_average_boxes(det_vis, det_ir, weight_rgb=w_rgb, weight_ir=w_ir, iou_threshold=iou_thres)
+                        out_combined.append(fused)
+                    
+                    out = out_combined
+                else:
+                    out = torch.cat((out, out_ir), dim=1) if out is not None else out_ir
+                    print("unknown late fusion type, using NMS")
+                    out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+            else: 
+                out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+
             t1 += time_synchronized() - t
 
             if enable_label_remap:
@@ -448,6 +481,7 @@ if __name__ == '__main__':
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     parser.add_argument('--enable-label-remap', action='store_true', help='enable label remapping for using default coco labels with your dataset')
     parser.add_argument('--ir-weights', type=str, help='path to IR model weights for late fusion')
+    parser.add_argument('--late-fusion-method', type=str, default='NMS', help='late fusion type (NMS, NMS+Weight, AVG, AVG+Weight)')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
@@ -472,6 +506,7 @@ if __name__ == '__main__':
              v5_metric=opt.v5_metric,
              enable_label_remap=opt.enable_label_remap,
              ir_weights=opt.ir_weights,
+             late_fusion_type=opt.late_fusion_method,
              )
 
     elif opt.task == 'speed':  # speed benchmarks
