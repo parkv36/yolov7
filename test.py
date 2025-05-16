@@ -41,7 +41,9 @@ def test(data,
          trace=False,
          is_coco=False,
          v5_metric=False,
-         enable_label_remap=False):
+         enable_label_remap=False,
+         ir_weights=None,
+         ):
     # Initialize/load model and set device
     training = model is not None
     if training:  # called by train.py
@@ -57,17 +59,27 @@ def test(data,
 
         # Load model
         model = attempt_load(weights, map_location=device)  # load FP32 model
+        model_ir = None
+        if opt.ir_weights:
+            model_ir = attempt_load(opt.ir_weights, map_location=device)
         gs = max(int(model.stride.max()), 32)  # grid size (max stride)
         imgsz = check_img_size(imgsz, s=gs)  # check img_size
         
-        fusion_safe = model.fusion_type not in ['early', 'mid', 'late']
-        if trace and fusion_safe:
+        if hasattr(model, 'fusion_type'):
+            tracing_safe = model.fusion_type not in ['early', 'mid', 'late']
+        else:
+            tracing_safe =   True
+        if trace and tracing_safe:
             model = TracedModel(model, device, imgsz)
+            if model_ir:
+                model_ir = TracedModel(model_ir, device, imgsz)
 
     # Half
     half = device.type != 'cpu' and half_precision  # half precision only supported on CUDA
     if half:
         model.half()
+        if model_ir:
+            model_ir.half()
 
     # Configure
     model.eval()
@@ -97,15 +109,35 @@ def test(data,
     # Dataloader
     if not training:
         if device.type != 'cpu':
-            dummy_rgb = torch.zeros(1, 3, imgsz, imgsz).to(device)
-            dummy_ir = torch.zeros(1, 3, imgsz, imgsz).to(device)
-            dummy_time = torch.zeros(1, dtype=torch.long).to(device)
+            if is_fusion:
+                if fusion_type in ['early', 'mid']:
+                    dummy_rgb = torch.zeros(1, 3, imgsz, imgsz).to(device)
+                    dummy_ir = torch.zeros(1, 3, imgsz, imgsz).to(device)
+                    dummy_time = torch.zeros(1, dtype=torch.long).to(device)
 
-            # Match model's precision
-            dummy_rgb = dummy_rgb.type_as(next(model.parameters()))
-            dummy_ir = dummy_ir.type_as(next(model.parameters()))
+                    # Match model's precision
+                    dummy_rgb = dummy_rgb.type_as(next(model.parameters()))
+                    dummy_ir = dummy_ir.type_as(next(model.parameters()))
 
-            model((dummy_rgb, dummy_ir, dummy_time))
+                    model((dummy_rgb, dummy_ir, dummy_time))
+                elif fusion_type == 'late':
+                    dummy_rgb = torch.zeros(1, 3, imgsz, imgsz).to(device)
+                    dummy_ir = torch.zeros(1, 3, imgsz, imgsz).to(device)
+                    dummy_time = torch.zeros(1, dtype=torch.long).to(device)
+
+                    # Match model's precision
+                    dummy_rgb = dummy_rgb.type_as(next(model.parameters()))
+                    dummy_ir = dummy_ir.type_as(next(model.parameters()))
+
+                    model(dummy_rgb)
+                    model_ir(dummy_ir)
+                else:
+                    raise ValueError(f"Unknown fusion type: {fusion_type}")
+            else:
+                dummy = torch.zeros(1, 3, imgsz, imgsz).to(device)
+                # Match model's precision
+                dummy = dummy.type_as(next(model.parameters()))
+                model(dummy)
         task = opt.task if opt.task in ('train', 'val', 'test') else 'val'  # path to train/val/test images
         dataloader = create_dataloader(data[task], imgsz, batch_size, gs, opt, pad=0.5, rect=True,
                                        prefix=colorstr(f'{task}: '), fusion_type=fusion_type)[0]
@@ -156,15 +188,23 @@ def test(data,
         with torch.no_grad():
             # Run model
             t = time_synchronized()
+
             if isinstance(img, (tuple, list)):
                 if is_fusion:
-                    if fusion_type in ['early', 'mid', 'late']:
+                    if fusion_type in ['early', 'mid']:
                         (rgb_img, ir_img, time_idx) = img
                         out, train_out = model((rgb_img, ir_img, time_idx), targets=targets)  # inference and training outputs
+                    elif fusion_type == 'late':
+                        (rgb_img, ir_img, time_idx) = img
+                        out, train_out = model(rgb_img, augment=augment)  # inference and training outputs
+                        out_ir, _ = model_ir(ir_img, augment=augment)  # inference and training outputs
+
+                        #TODO: add more complex functionality with non-nms approaches
+                        out = torch.cat((out, out_ir), dim=1) if out is not None and out_ir is not None else out or out_ir
                     else:
                         raise ValueError(f"Unknown fusion type: {fusion_type}")
                 else:
-                    raise ValueError("Model missing feature_fusion attribute but input is a tuple.")
+                    raise ValueError("Model missing fusion_type attribute but input is a tuple.")
             else:
                 out, train_out = model(img, augment=augment)
             
@@ -174,13 +214,22 @@ def test(data,
             if compute_loss:
                 loss += compute_loss([x.float() for x in train_out], targets)[1][:3]  # box, obj, cls
 
-
-
             # Run NMS
             targets[:, 2:] *= torch.Tensor([width, height, width, height]).to(device)  # to pixels
             lb = [targets[targets[:, 0] == i, 1:] for i in range(nb)] if save_hybrid else []  # for autolabelling
             t = time_synchronized()
             out = non_max_suppression(out, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+            # if out2 is not None:
+            #     out2 = non_max_suppression(out2, conf_thres=conf_thres, iou_thres=iou_thres, labels=lb, multi_label=True)
+            #     fused_outputs = []
+            #     for rgb_preds, ir_preds in zip(out, out2):
+            #         combined = torch.cat([rgb_preds, ir_preds], dim=0) if rgb_preds is not None and ir_preds is not None else rgb_preds or ir_preds
+            #         final_preds = non_max_suppression(combined.unsqueeze(0), conf_thres, iou_thres, multi_label=True)[0]
+            #         fused_outputs.append(final_preds)
+            #     out = fused_outputs
+            #     print(f"RGB preds: {[len(x) if x is not None else 0 for x in out]}")
+            #     print(f"IR preds: {[len(x) if x is not None else 0 for x in out2]}")
+            #     print(f"Fused preds: {[len(x) if x is not None else 0 for x in fused_outputs]}")
             t1 += time_synchronized() - t
 
             if enable_label_remap:
@@ -398,6 +447,7 @@ if __name__ == '__main__':
     parser.add_argument('--no-trace', action='store_true', help='don`t trace model')
     parser.add_argument('--v5-metric', action='store_true', help='assume maximum recall as 1.0 in AP calculation')
     parser.add_argument('--enable-label-remap', action='store_true', help='enable label remapping for using default coco labels with your dataset')
+    parser.add_argument('--ir-weights', type=str, help='path to IR model weights for late fusion')
     opt = parser.parse_args()
     opt.save_json |= opt.data.endswith('coco.yaml')
     opt.data = check_file(opt.data)  # check file
@@ -421,6 +471,7 @@ if __name__ == '__main__':
              trace=not opt.no_trace,
              v5_metric=opt.v5_metric,
              enable_label_remap=opt.enable_label_remap,
+             ir_weights=opt.ir_weights,
              )
 
     elif opt.task == 'speed':  # speed benchmarks
