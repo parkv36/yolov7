@@ -65,6 +65,9 @@ def custom(path_or_model='path/to/model.pt', autoshape=True):
     Returns:
         pytorch model
     """
+    if isinstance(path_or_model, str) and not os.path.exists(path_or_model):
+    raise FileNotFoundError(f"Model file not found: {path_or_model}")
+
     model = torch.load(path_or_model, map_location=torch.device('cpu')) if isinstance(path_or_model, str) else path_or_model  # load checkpoint
     if isinstance(model, dict):
         model = model['ema' if model.get('ema') else 'model']  # load model
